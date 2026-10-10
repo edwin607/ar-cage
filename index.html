@@ -32,9 +32,18 @@ const BLUE_DARK = 0x202860;
 const { MindARThree } = window.MINDAR.IMAGE;
 const THREE = window.MINDAR.IMAGE.THREE;
 
+/* the image target ships gzipped; decompress in-browser */
+async function loadTarget() {
+  const buf = await (await fetch('./artwork.mind.gz')).arrayBuffer();
+  const ds = new DecompressionStream('gzip');
+  const plain = await new Response(new Blob([buf]).stream().pipeThrough(ds)).arrayBuffer();
+  return URL.createObjectURL(new Blob([plain]));
+}
+
+const targetUrl = await loadTarget();
 const mindarThree = new MindARThree({
   container: document.querySelector('#ar-container'),
-  imageTargetSrc: './artwork.mind',
+  imageTargetSrc: targetUrl,
 });
 const { renderer, scene, camera } = mindarThree;
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
