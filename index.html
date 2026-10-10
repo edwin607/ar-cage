@@ -17,7 +17,7 @@
   #hint.hidden { opacity:0; }
 </style>
 <script type="importmap">
-{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/" } }
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.150.1/examples/jsm/" } }
 </script>
 </head>
 <body>
@@ -25,12 +25,12 @@
 <div id="hint">Point your camera at the artwork</div>
 <script type="module">
 import 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
+import * as THREE from 'three';
 /* Palette sampled from the artwork's linework */
 const BLUE = 0x2a3670;
 const BLUE_DARK = 0x202860;
 
 const { MindARThree } = window.MINDAR.IMAGE;
-const THREE = window.MINDAR.IMAGE.THREE;
 
 /* the image target ships gzipped & chunked (repo file-size friendly); reassemble + decompress in-browser */
 async function loadTarget() {
@@ -195,8 +195,8 @@ let mA = 0;               /* mouse angle */
 let cA = -0.8;            /* cat angle */
 const clock = new THREE.Clock();
 
-mindarThree.on('targetFound', () => document.getElementById('hint').classList.add('hidden'));
-mindarThree.on('targetLost', () => document.getElementById('hint').classList.remove('hidden'));
+anchor.onTargetFound = () => document.getElementById('hint').classList.add('hidden');
+anchor.onTargetLost = () => document.getElementById('hint').classList.remove('hidden');
 
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -228,7 +228,7 @@ function animate() {
 mindarThree.start().then(() => {
   renderer.setAnimationLoop(animate);
 }).catch(err => {
-  document.getElementById('hint').textContent = 'Camera error: ' + err.message;
+  document.getElementById('hint').textContent = 'Camera error: ' + ((err && err.message) || String(err) || 'permission denied');
 });
 </script>
 </body>
