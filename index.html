@@ -13,7 +13,10 @@
 <title>Dome — AR Augment</title>
 <style>
   html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#111; }
-  #ar-container { width:100%; height:100%; }
+  #ar-container { position:fixed; inset:0; width:100%; height:100%; }
+  /* MindAR injects the camera <video> at z-index:-2 — behind the page background. Pin it visible. */
+  #ar-container video { position:absolute; z-index:0 !important; object-fit:cover; }
+  #ar-container canvas { z-index:1 !important; }
   #hint {
     position:fixed; left:50%; bottom:28px; transform:translateX(-50%);
     font-family:ui-monospace, Menlo, monospace; font-size:13px; letter-spacing:.08em;
@@ -312,6 +315,7 @@ async function startAR() {
   });
   const { renderer, scene, camera } = mindarThree;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+  renderer.setClearColor(0x000000, 0);  /* transparent — camera video must show through */
 
   const anchor = mindarThree.addAnchor(0);
   const A = buildScene(scene);
@@ -323,6 +327,11 @@ async function startAR() {
   anchor.onTargetLost = () => hint.classList.remove('hidden');
 
   await mindarThree.start();
+  /* MindAR computes the camera projection in resize(), which can fire before the
+     video stream is ready — leaving a default FOV that misplaces the anchor.
+     Re-run it once the stream is live and on orientation changes. */
+  mindarThree.resize();
+  window.addEventListener('orientationchange', () => setTimeout(() => mindarThree.resize(), 300));
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.05);
     animateActors(A, dt, clock.elapsedTime);
