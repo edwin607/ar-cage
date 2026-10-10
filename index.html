@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#202860">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta property="og:title" content="Dome — AR Augment">
+<meta property="og:description" content="Point your camera at the artwork: a low-poly dome in the painting's own blue, with a cat chasing a mouse inside.">
+<meta property="og:image" content="./artwork-target.jpg">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M4 26 A12 12 0 0 1 28 26 Z' fill='none' stroke='%232a3670' stroke-width='3'/></svg>">
 <title>Dome — AR Augment</title>
 <style>
   html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#111; }
@@ -12,7 +19,7 @@
     font-family:ui-monospace, Menlo, monospace; font-size:13px; letter-spacing:.08em;
     color:#fff; background:rgba(32,40,96,.82); border:1px solid #4a56a8;
     padding:10px 18px; border-radius:999px; pointer-events:none; z-index:10;
-    transition:opacity .6s; text-align:center;
+    transition:opacity .6s; text-align:center; max-width:80vw;
   }
   #hint.hidden { opacity:0; }
 </style>
@@ -26,209 +33,348 @@
 <script type="module">
 import 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
 import * as THREE from 'three';
-/* Palette sampled from the artwork's linework */
-const BLUE = 0x2a3670;
+import { mergeBufferGeometries as mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* Palette sampled from the artwork */
+const BLUE = 0x2a3670;        /* linework */
 const BLUE_DARK = 0x202860;
+const RED = 0xc8503c;
+const MUSTARD = 0xc9922e;
+const GREEN = 0x5bbf8a;
+
+const REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const MOTION = REDUCED ? 0.5 : 1.0;
 
 const { MindARThree } = window.MINDAR.IMAGE;
+const hint = document.getElementById('hint');
 
-/* the image target ships gzipped & chunked (repo file-size friendly); reassemble + decompress in-browser */
+/* ---------- image target: chunked + gzipped, reassembled in-browser ---------- */
+async function gunzip(buf) {
+  if ('DecompressionStream' in window) {
+    const ds = new DecompressionStream('gzip');
+    return new Response(new Blob([buf]).stream().pipeThrough(ds)).arrayBuffer();
+  }
+  const { ungzip } = await import('https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.esm.mjs');
+  return ungzip(new Uint8Array(buf)).buffer;
+}
 async function loadTarget() {
-  const parts = await Promise.all(['aa','ab','ac','ad','ae'].map(async p =>
+  let parts;
+  try {
+    const manifest = await (await fetch('./artwork.mind.manifest.json')).json();
+    parts = manifest.parts;
+  } catch (e) {
+    parts = ['aa', 'ab', 'ac', 'ad', 'ae']; /* fallback */
+  }
+  const bufs = await Promise.all(parts.map(async p =>
     new Uint8Array(await (await fetch('./artwork.mind.gz.' + p)).arrayBuffer())));
-  const total = parts.reduce((n, p) => n + p.length, 0);
+  const total = bufs.reduce((n, p) => n + p.length, 0);
   const buf = new Uint8Array(total);
-  let off = 0; for (const p of parts) { buf.set(p, off); off += p.length; }
-  const ds = new DecompressionStream('gzip');
-  const plain = await new Response(new Blob([buf]).stream().pipeThrough(ds)).arrayBuffer();
+  let off = 0; for (const p of bufs) { buf.set(p, off); off += p.length; }
+  const plain = await gunzip(buf);
   return URL.createObjectURL(new Blob([plain]));
 }
 
-const targetUrl = await loadTarget();
-const mindarThree = new MindARThree({
-  container: document.querySelector('#ar-container'),
-  imageTargetSrc: targetUrl,
-});
-const { renderer, scene, camera } = mindarThree;
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-
-const anchor = mindarThree.addAnchor(0);
-const root = new THREE.Group();
-anchor.group.add(root);
-
-/* ---------- lighting ---------- */
-scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-const key = new THREE.DirectionalLight(0xfff4e0, 1.4);
-key.position.set(0.6, 1.2, 0.9);
-scene.add(key);
-const rim = new THREE.DirectionalLight(0x88aaff, 0.6);
-rim.position.set(-0.8, 0.5, -0.6);
-scene.add(rim);
-
-/* ---------- helpers ---------- */
-const domeMat = new THREE.MeshStandardMaterial({ color: BLUE, roughness: 0.55, metalness: 0.15, flatShading: true });
-
-/* thick edge "strokes": cylinders between vertices, radius tuned to the painting's stroke weight */
-function tubeBetween(a, b, r, mat) {
-  const dir = new THREE.Vector3().subVectors(b, a);
-  const len = dir.length();
-  const geo = new THREE.CylinderGeometry(r, r, len, 6, 1, false);
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.copy(a).addScaledVector(dir, 0.5);
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
-  return mesh;
+/* ---------- seeded PRNG (stable irregularity) ---------- */
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-/* ---------- low-poly abstract dome ---------- */
+/* ---------- scene shared by AR and fallback preview ---------- */
 const R = 0.34;           /* dome radius relative to target width */
 const STROKE = 0.011;     /* stroke thickness — matches the artwork's heavy blue lines */
-const dome = new THREE.Group();
-
-const geo = new THREE.SphereGeometry(R, 9, 5, 0, Math.PI * 2, 0, Math.PI / 2); // low-poly hemisphere
-geo.deleteAttribute('normal'); geo.deleteAttribute('uv');
-const pos = geo.getAttribute('position');
-const index = geo.getIndex();
-
-const seen = new Set();
-const vA = new THREE.Vector3(), vB = new THREE.Vector3();
-function addEdge(i, j) {
-  const k = i < j ? i + '_' + j : j + '_' + i;
-  if (seen.has(k)) return; seen.add(k);
-  vA.fromBufferAttribute(pos, i); vB.fromBufferAttribute(pos, j);
-  if (vA.distanceTo(vB) < 1e-5) return;
-  dome.add(tubeBetween(vA, vB, STROKE, domeMat));
-}
-for (let f = 0; f < index.count; f += 3) {
-  addEdge(index.getX(f), index.getX(f + 1));
-  addEdge(index.getX(f + 1), index.getX(f + 2));
-  addEdge(index.getX(f + 2), index.getX(f));
-}
-/* node caps at vertices, like the painting's junctions */
-const nodeGeo = new THREE.IcosahedronGeometry(STROKE * 1.7, 0);
-const seenV = new Set();
-for (let i = 0; i < pos.count; i++) {
-  vA.fromBufferAttribute(pos, i);
-  const k = vA.toArray().map(n => n.toFixed(3)).join(',');
-  if (seenV.has(k)) continue; seenV.add(k);
-  const n = new THREE.Mesh(nodeGeo, domeMat);
-  n.position.copy(vA);
-  dome.add(n);
-}
-/* base ring */
-const ring = new THREE.Mesh(new THREE.TorusGeometry(R, STROKE, 6, 18), domeMat);
-ring.rotation.x = Math.PI / 2;
-dome.add(ring);
-/* faint interior shell so the dome reads as a volume */
-const shell = new THREE.Mesh(
-  new THREE.SphereGeometry(R * 0.995, 9, 5, 0, Math.PI * 2, 0, Math.PI / 2),
-  new THREE.MeshStandardMaterial({ color: BLUE, transparent: true, opacity: 0.07, flatShading: true, side: THREE.DoubleSide, depthWrite: false })
-);
-dome.add(shell);
-root.add(dome);
-
-/* floor disc shadow */
-const floor = new THREE.Mesh(
-  new THREE.CircleGeometry(R * 0.96, 18),
-  new THREE.MeshBasicMaterial({ color: BLUE_DARK, transparent: true, opacity: 0.18, depthWrite: false })
-);
-floor.rotation.x = -Math.PI / 2; floor.position.y = 0.001;
-root.add(floor);
-
-/* ---------- low-poly cat & mouse ---------- */
-function makeCat() {
-  const c = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.IcosahedronGeometry(0.030, 0), domeMat);
-  body.scale.set(1.5, 1.0, 0.9);
-  c.add(body);
-  const head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.020, 0), domeMat);
-  head.position.set(0.042, 0.016, 0);
-  c.add(head);
-  const earGeo = new THREE.ConeGeometry(0.009, 0.018, 4);
-  const earL = new THREE.Mesh(earGeo, domeMat); earL.position.set(0.042, 0.038, 0.010);
-  const earR = new THREE.Mesh(earGeo, domeMat); earR.position.set(0.042, 0.038, -0.010);
-  c.add(earL, earR);
-  const eyeGeo = new THREE.IcosahedronGeometry(0.004, 0);
-  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffe08a });
-  const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(0.058, 0.020, 0.009);
-  const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.058, 0.020, -0.009);
-  c.add(eL, eR);
-  const legGeo = new THREE.ConeGeometry(0.006, 0.026, 4);
-  [[0.022, 0.012], [0.022, -0.012], [-0.026, 0.012], [-0.026, -0.012]].forEach(p => {
-    const leg = new THREE.Mesh(legGeo, domeMat);
-    leg.rotation.x = Math.PI; leg.position.set(p[0], -0.026, p[1]);
-    c.add(leg);
-  });
-  const tail = new THREE.Mesh(new THREE.TorusGeometry(0.020, 0.005, 4, 8, Math.PI * 1.1), domeMat);
-  tail.position.set(-0.048, 0.012, 0); tail.rotation.y = Math.PI / 2;
-  c.add(tail);
-  c.userData.tail = tail;
-  return c;
-}
-function makeMouse() {
-  const m = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color: BLUE, roughness: 0.6, flatShading: true });
-  const body = new THREE.Mesh(new THREE.IcosahedronGeometry(0.014, 0), mat);
-  body.scale.set(1.6, 0.9, 0.9);
-  m.add(body);
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.006, 0.014, 4), mat);
-  nose.rotation.z = -Math.PI / 2; nose.position.set(0.026, 0, 0);
-  m.add(nose);
-  const earGeo = new THREE.IcosahedronGeometry(0.006, 0);
-  const earL = new THREE.Mesh(earGeo, mat); earL.position.set(0.006, 0.012, 0.008);
-  const earR = new THREE.Mesh(earGeo, mat); earR.position.set(0.006, 0.012, -0.008);
-  m.add(earL, earR);
-  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.001, 0.045, 4), mat);
-  tail.rotation.z = Math.PI / 2 - 0.4; tail.position.set(-0.032, 0.004, 0);
-  m.add(tail);
-  return m;
-}
-
-const cat = makeCat();
-const mouse = makeMouse();
-const catY = 0.038, mouseY = 0.016;
-cat.position.y = catY; mouse.position.y = mouseY;
-root.add(cat, mouse);
-
-/* chase animation: mouse orbits, cat pursues with a lagging angle */
 const ORBIT = R * 0.62;
-let mA = 0;               /* mouse angle */
-let cA = -0.8;            /* cat angle */
+
+function buildScene(scene) {
+  const root = new THREE.Group();
+  scene.add(root);
+
+  /* lighting — matte, gallery-flat */
+  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+  const key = new THREE.DirectionalLight(0xfff4e0, 1.0);
+  key.position.set(0.6, 1.2, 0.9);
+  scene.add(key);
+  const rim = new THREE.DirectionalLight(0x88aaff, 0.6);
+  rim.position.set(-0.8, 0.5, -0.6);
+  scene.add(rim);
+
+  const domeMat = new THREE.MeshStandardMaterial({ color: BLUE, roughness: 0.85, metalness: 0, flatShading: true });
+  const mustardMat = new THREE.MeshStandardMaterial({ color: MUSTARD, roughness: 0.85, metalness: 0, flatShading: true });
+
+  /* irregular low-poly hemisphere: displaced vertices, varied stroke weight */
+  const rand = mulberry32(20261010);
+  const geo = new THREE.SphereGeometry(R, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2);
+  geo.deleteAttribute('normal'); geo.deleteAttribute('uv');
+  const pos = geo.getAttribute('position');
+  {
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      const n = v.clone().normalize();
+      v.addScaledVector(n, (rand() - 0.5) * 0.04 * R);
+      pos.setXYZ(i, v.x, v.y, v.z);
+    }
+  }
+
+  /* merge every tube + node into ONE geometry (one draw call) */
+  const geos = [];
+  const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+  const seen = new Set();
+  function addEdge(i, j) {
+    const k = i < j ? i + '_' + j : j + '_' + i;
+    if (seen.has(k)) return; seen.add(k);
+    tmpA.fromBufferAttribute(pos, i); tmpB.fromBufferAttribute(pos, j);
+    if (tmpA.distanceTo(tmpB) < 1e-5) return;
+    const r = STROKE * (0.75 + rand() * 0.5);   /* hand-drawn weight variance */
+    const g = new THREE.CylinderGeometry(r, r, tmpA.distanceTo(tmpB), 6, 1, false).toNonIndexed();
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion().setFromUnitVectors(up, tmpB.clone().sub(tmpA).normalize());
+    m.compose(tmpA.clone().add(tmpB).multiplyScalar(0.5), q, new THREE.Vector3(1, 1, 1));
+    g.applyMatrix4(m);
+    geos.push(g);
+  }
+  const index = geo.getIndex();
+  for (let f = 0; f < index.count; f += 3) {
+    addEdge(index.getX(f), index.getX(f + 1));
+    addEdge(index.getX(f + 1), index.getX(f + 2));
+    addEdge(index.getX(f + 2), index.getX(f));
+  }
+  const seenV = new Set();
+  const mustardNodes = new Set();
+  while (mustardNodes.size < 3) mustardNodes.add(Math.floor(rand() * pos.count));
+  let vi = 0;
+  for (let i = 0; i < pos.count; i++, vi++) {
+    tmpA.fromBufferAttribute(pos, i);
+    const k = tmpA.toArray().map(n => n.toFixed(3)).join(',');
+    if (seenV.has(k)) continue; seenV.add(k);
+    const g = new THREE.IcosahedronGeometry(STROKE * 1.7, 0).toNonIndexed();
+    g.translate(tmpA.x, tmpA.y, tmpA.z);
+    if (mustardNodes.has(vi)) {
+      /* accent junctions stay separate so they can take the mustard material */
+      const node = new THREE.Mesh(g, mustardMat);
+      root.add(node);
+    } else {
+      geos.push(g);
+    }
+  }
+  const dome = new THREE.Group();
+  dome.add(new THREE.Mesh(mergeGeometries(geos, false), domeMat));
+
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(R, STROKE, 6, 18), domeMat);
+  ring.rotation.x = Math.PI / 2;
+  dome.add(ring);
+
+  const shell = new THREE.Mesh(
+    new THREE.SphereGeometry(R * 0.995, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: BLUE, transparent: true, opacity: 0.07, flatShading: true, side: THREE.DoubleSide, depthWrite: false })
+  );
+  dome.add(shell);
+  root.add(dome);
+
+  const floor = new THREE.Mesh(
+    new THREE.CircleGeometry(R * 0.96, 18),
+    new THREE.MeshBasicMaterial({ color: BLUE_DARK, transparent: true, opacity: 0.18, depthWrite: false })
+  );
+  floor.rotation.x = -Math.PI / 2; floor.position.y = 0.001;
+  root.add(floor);
+
+  /* ---------- cat (blue linework = structure/predator) ---------- */
+  function makeCat() {
+    const c = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.IcosahedronGeometry(0.030, 0), domeMat);
+    body.scale.set(1.5, 1.0, 0.9);
+    c.add(body);
+    const head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.020, 0), domeMat);
+    head.position.set(0.042, 0.016, 0);
+    c.add(head);
+    const earGeo = new THREE.ConeGeometry(0.009, 0.018, 4);
+    const earL = new THREE.Mesh(earGeo, domeMat); earL.position.set(0.042, 0.038, 0.010);
+    const earR = new THREE.Mesh(earGeo, domeMat); earR.position.set(0.042, 0.038, -0.010);
+    c.add(earL, earR);
+    const eyeGeo = new THREE.IcosahedronGeometry(0.004, 0);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffe08a });
+    const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(0.058, 0.020, 0.009);
+    const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.058, 0.020, -0.009);
+    c.add(eL, eR);
+    const legGeo = new THREE.ConeGeometry(0.006, 0.026, 4);
+    [[0.022, 0.012], [0.022, -0.012], [-0.026, 0.012], [-0.026, -0.012]].forEach(p => {
+      const leg = new THREE.Mesh(legGeo, domeMat);
+      leg.rotation.x = Math.PI; leg.position.set(p[0], -0.026, p[1]);
+      c.add(leg);
+    });
+    const tail = new THREE.Mesh(new THREE.TorusGeometry(0.020, 0.005, 4, 8, Math.PI * 1.1), domeMat);
+    tail.position.set(-0.048, 0.012, 0); tail.rotation.y = Math.PI / 2;
+    c.add(tail);
+    c.userData.tail = tail;
+    return c;
+  }
+  /* ---------- mouse (green = emerged from the painting's green node) ---------- */
+  function makeMouse() {
+    const m = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: GREEN, roughness: 0.85, metalness: 0, flatShading: true });
+    const body = new THREE.Mesh(new THREE.IcosahedronGeometry(0.014, 0), mat);
+    body.scale.set(1.6, 0.9, 0.9);
+    m.add(body);
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.006, 0.014, 4), mat);
+    nose.rotation.z = -Math.PI / 2; nose.position.set(0.026, 0, 0);
+    m.add(nose);
+    const earGeo = new THREE.IcosahedronGeometry(0.006, 0);
+    const earL = new THREE.Mesh(earGeo, mat); earL.position.set(0.006, 0.012, 0.008);
+    const earR = new THREE.Mesh(earGeo, mat); earR.position.set(0.006, 0.012, -0.008);
+    m.add(earL, earR);
+    const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.001, 0.045, 4), mat);
+    tail.rotation.z = Math.PI / 2 - 0.4; tail.position.set(-0.032, 0.004, 0);
+    m.add(tail);
+    return m;
+  }
+
+  const cat = makeCat();
+  const mouse = makeMouse();
+  const catY = 0.038, mouseY = 0.016;
+  cat.position.y = catY; mouse.position.y = mouseY;
+  root.add(cat, mouse);
+
+  return { root, dome, cat, mouse, catY, mouseY };
+}
+
+/* ---------- chase dramaturgy: CHASE → FREEZE (cat overshoots) → STANDOFF → reverse ---------- */
+const actors = (() => {
+  let mA = 0, cA = -0.8, dir = 1;
+  let state = 'CHASE', stateT = 0, chaseDur = 7;
+  let mV = 1.6, cV = 0;
+  return {
+    step(dt, t) {
+      stateT += dt;
+      if (state === 'CHASE') {
+        mV = 1.6 * MOTION;
+        mA += dir * mV * dt;
+        let d = (mA - cA) * dir;
+        cV = (d * 4.0 + 0.9) * MOTION;
+        cA += dir * cV * dt;
+        if (stateT > chaseDur) { state = 'FREEZE'; stateT = 0; mV = 0; }
+      } else if (state === 'FREEZE') {
+        /* mouse stops dead; cat overshoots and decelerates */
+        cV = Math.max(0, cV - dt * 3.0);
+        cA += dir * cV * dt;
+        if (cV === 0) { state = 'STANDOFF'; stateT = 0; }
+      } else if (state === 'STANDOFF') {
+        if (stateT > 1.5) {
+          state = 'CHASE'; stateT = 0;
+          dir *= -1;                       /* mouse bolts the other way */
+          chaseDur = 6 + Math.random() * 4;
+          /* swap leader: cat now ahead gets chased past */
+          const gap = 0.6;
+          cA = mA + dir * gap;
+        }
+      }
+      return { mA, cA, dir, state };
+    }
+  };
+})();
+
+function animateActors(A, dt, t) {
+  const { mA, cA, state } = actors.step(dt, t);
+  const wob = Math.sin(t * 2.2) * 0.05;  /* weave crosses the far arc */
+  const mr = ORBIT * (1 + wob);
+  const moving = state === 'CHASE' ? 1 : 0;
+  A.mouse.position.set(Math.cos(mA) * mr, A.mouseY + Math.abs(Math.sin(t * 14)) * 0.006 * moving, Math.sin(mA) * mr);
+  A.mouse.rotation.y = -mA - Math.PI / 2 + Math.sin(t * 9) * 0.15 * moving;
+  const cr = ORBIT * (1 - wob * 0.5);
+  A.cat.position.set(Math.cos(cA) * cr, A.catY + Math.abs(Math.sin(t * 10)) * 0.008 * moving, Math.sin(cA) * cr);
+  A.cat.rotation.y = -cA - Math.PI / 2;
+  /* tail flicks: calm while chasing, agitated in standoff */
+  const flick = state === 'STANDOFF' ? 1.8 : 1.0;
+  A.cat.userData.tail.rotation.x = Math.sin(t * 6 * flick) * 0.4 * flick;
+  if (!REDUCED) {
+    const s = 1 + Math.sin(t * 0.8) * 0.008;
+    A.dome.scale.set(s, 1 + Math.sin(t * 0.8 + 1) * 0.005, s);
+  }
+}
+
+/* ---------- boot: AR, or orbit-preview fallback ---------- */
 const clock = new THREE.Clock();
 
-anchor.onTargetFound = () => document.getElementById('hint').classList.add('hidden');
-anchor.onTargetLost = () => document.getElementById('hint').classList.remove('hidden');
+async function startAR() {
+  const targetUrl = await loadTarget();
+  const mindarThree = new MindARThree({
+    container: document.querySelector('#ar-container'),
+    imageTargetSrc: targetUrl,
+    filterMinCF: 0.001,
+    filterBeta: 0.01,
+    missTolerance: 10,
+    warmupTolerance: 5,
+    renderer: { powerPreference: 'high-performance' },
+  });
+  const { renderer, scene, camera } = mindarThree;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
 
-function animate() {
-  const dt = Math.min(clock.getDelta(), 0.05);
-  const t = clock.elapsedTime;
+  const anchor = mindarThree.addAnchor(0);
+  const A = buildScene(scene);
+  anchor.group.add(A.root);
+  /* dome grows from the painting's green junction node, not dead-center */
+  A.root.position.set(0.02, 0, -0.06);
 
-  mA += dt * 1.6;
-  /* cat chases: spring toward mouse angle, always a little behind */
-  let d = mA - cA;
-  d = Math.atan2(Math.sin(d), Math.cos(d));
-  cA += dt * (d * 4.0 + 0.9);
+  anchor.onTargetFound = () => hint.classList.add('hidden');
+  anchor.onTargetLost = () => hint.classList.remove('hidden');
 
-  const wob = Math.sin(t * 2.2) * 0.03;  /* mouse weaves */
-  const mr = ORBIT * (1 + wob);
-  mouse.position.set(Math.cos(mA) * mr, mouseY + Math.abs(Math.sin(t * 14)) * 0.006, Math.sin(mA) * mr);
-  mouse.rotation.y = -mA - Math.PI / 2 + Math.sin(t * 9) * 0.15;
-
-  const cr = ORBIT * (1 - wob * 0.5);
-  cat.position.set(Math.cos(cA) * cr, catY + Math.abs(Math.sin(t * 10)) * 0.008, Math.sin(cA) * cr);
-  cat.rotation.y = -cA - Math.PI / 2;
-  cat.userData.tail.rotation.x = Math.sin(t * 6) * 0.4;
-
-  /* dome breathes almost imperceptibly */
-  const s = 1 + Math.sin(t * 0.8) * 0.008;
-  dome.scale.set(s, 1 + Math.sin(t * 0.8 + 1) * 0.005, s);
-
-  renderer.render(scene, camera);
+  await mindarThree.start();
+  renderer.setAnimationLoop(() => {
+    const dt = Math.min(clock.getDelta(), 0.05);
+    animateActors(A, dt, clock.elapsedTime);
+    renderer.render(scene, camera);
+  });
 }
 
-mindarThree.start().then(() => {
-  renderer.setAnimationLoop(animate);
-}).catch(err => {
-  document.getElementById('hint').textContent = 'Camera error: ' + ((err && err.message) || String(err) || 'permission denied');
+function startPreview() {
+  hint.textContent = 'Camera unavailable — drag to explore the augment';
+  const container = document.querySelector('#ar-container');
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+  renderer.setSize(container.clientWidth, container.clientHeight);
+  container.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  /* the artwork as the ground plane the dome sits on */
+  new THREE.TextureLoader().load('./artwork-target.jpg', tex => {
+    tex.encoding = THREE.sRGBEncoding;
+    const aspect = tex.image.width / tex.image.height;
+    const art = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1 / aspect),
+      new THREE.MeshBasicMaterial({ map: tex })
+    );
+    art.rotation.x = -Math.PI / 2;
+    scene.add(art);
+  });
+  const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.01, 10);
+  camera.position.set(0.62, 0.78, 1.05);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0.02, 0.1, -0.06);
+  controls.enableDamping = true;
+
+  const A = buildScene(scene);
+  A.root.position.set(0.02, 0, -0.06);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(container.clientWidth, container.clientHeight);
+  });
+  renderer.setAnimationLoop(() => {
+    const dt = Math.min(clock.getDelta(), 0.05);
+    animateActors(A, dt, clock.elapsedTime);
+    controls.update();
+    renderer.render(scene, camera);
+  });
+}
+
+startAR().catch(err => {
+  console.warn('AR start failed, falling back to preview:', err);
+  startPreview();
 });
 </script>
 </body>
