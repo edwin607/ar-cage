@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#202860">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -18,13 +18,21 @@
   #ar-container video { position:absolute; z-index:0 !important; object-fit:cover; }
   #ar-container canvas { z-index:1 !important; }
   #hint {
-    position:fixed; left:50%; bottom:28px; transform:translateX(-50%);
+    position:fixed; left:50%; bottom:calc(28px + env(safe-area-inset-bottom, 0px));
+    transform:translateX(-50%);
     font-family:ui-monospace, Menlo, monospace; font-size:13px; letter-spacing:.08em;
     color:#fff; background:rgba(32,40,96,.82); border:1px solid #4a56a8;
     padding:10px 18px; border-radius:999px; pointer-events:none; z-index:10;
     transition:opacity .6s; text-align:center; max-width:80vw;
   }
   #hint.hidden { opacity:0; }
+  #debug {
+    position:fixed; left:10px; top:10px; z-index:11; display:none;
+    font:11px/1.45 ui-monospace, Menlo, monospace; color:#bff;
+    background:rgba(0,0,0,.62); border:1px solid #2a3670; border-radius:6px;
+    padding:8px 10px; white-space:pre; pointer-events:none;
+  }
+  body.debug #debug { display:block; }
 </style>
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.150.1/examples/jsm/" } }
@@ -33,18 +41,21 @@
 <body>
 <div id="ar-container"></div>
 <div id="hint">Point your camera at the artwork</div>
+<div id="debug"></div>
 <script type="module">
 import 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
 import * as THREE from 'three';
 import { mergeBufferGeometries as mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-/* Palette sampled from the artwork */
-const BLUE = 0x2a3670;        /* linework */
+/* Palette sampled from the artwork's linework */
+const BLUE = 0x2a3670;
 const BLUE_DARK = 0x202860;
-const RED = 0xc8503c;
-const MUSTARD = 0xc9922e;
 const GREEN = 0x5bbf8a;
+
+const DEBUG = new URLSearchParams(location.search).has('debug');
+if (DEBUG) document.body.classList.add('debug');
+const debugEl = document.getElementById('debug');
 
 const REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const MOTION = REDUCED ? 0.5 : 1.0;
@@ -78,99 +89,117 @@ async function loadTarget() {
   return URL.createObjectURL(new Blob([plain]));
 }
 
-/* ---------- seeded PRNG (stable irregularity) ---------- */
-function mulberry32(seed) {
-  return function () {
-    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+/* ---------- anchored coordinate space --------------------------------------
+   MindAR builds each anchor as  poseMatrix * postMatrix, where postMatrix is
+   translate(inputWidth/2, inputHeight/2, 0) * scale(inputWidth): the origin is
+   the target image centre and one unit is the target image WIDTH. The pose then
+   maps image pixels (y down) into three.js world space (y up), so the anchor's
+   own frame ends up as:
 
-/* ---------- scene shared by AR and fallback preview ----------
-   Gazebo form from the artist's sketch: vertical pillars on a base ring,
-   two horizontal eave bands, and a faceted hip roof rising to a small apex ring. */
-const R = 0.30;           /* base radius relative to target width */
-const STROKE = 0.011;     /* stroke thickness — matches the artwork's heavy blue lines */
-const WALL_H = 0.20;      /* pillar height */
-const ROOF_H = 0.13;      /* roof rise above the eave */
-const APEX_R = 0.10;      /* small top ring radius */
+       +x = right,  +y = UP the image,  +z = out of the painting (toward you)
+
+   The painting therefore lies in the anchor's XY plane — NOT the XZ plane. The
+   scene below is authored y-up (footprint in XZ, height on +Y), which is what
+   the orbit-preview wants; AR wraps it in a +90 deg X rotation so that +Y (up)
+   becomes +z (out of the painting) and canonical +Z (down the image) becomes -y
+   (up the image). The previous build placed the footprint in XZ and its height
+   on +y, so the structure lay flat on the painting instead of standing on it.
+   The artwork photo is 900x650, so the painting spans 1.0 x 0.7222 and the
+   augment's footprint must stay inside that to read as "standing on" it. */
+const TARGET_AR = 900 / 650;
+const ART_H = 1 / TARGET_AR;      /* 0.7222 — painting height in anchor units */
+
+/* Gazebo proportions measured off the rendered mockup (see README). */
+const R = 0.34;                   /* base/eave ring radius — Ø 0.68 of the painting */
+const WALL_H = 0.24;              /* post height */
+const ROOF_H = 0.19;              /* roof rise above the eave */
+const APEX_R = 0.15;              /* small ring at the top */
 const SIDES = 8;
-const ORBIT = R * 0.55;
+const STROKE = 0.0045;            /* tube radius — matches the painting's line weight */
+const ORBIT = R * 0.50;           /* cat/mouse chase radius, inside the posts */
+
+/* The mockup shows the structure centred on the painting, so the scene root
+   sits at the anchor origin. An earlier build nudged it by (-0.10, 0, -0.05),
+   which pushed the whole augment off the painting. */
+const ROOT_OFFSET = new THREE.Vector3(0, 0, 0);
+
+/* y-up (authoring) -> MindAR anchor space: +Y (up) becomes +z (out of the painting) */
+function toAnchorSpace(object3d) {
+  const g = new THREE.Group();
+  g.rotation.x = Math.PI / 2;
+  g.add(object3d);
+  return g;
+}
 
 function buildScene(scene) {
   const root = new THREE.Group();
+  root.position.copy(ROOT_OFFSET);
   scene.add(root);
 
-  /* lighting — matte, gallery-flat */
-  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-  const key = new THREE.DirectionalLight(0xfff4e0, 1.0);
+  /* lighting — matte, gallery-flat, and restrained: the mockup's tubes stay a
+     deep navy, so keep total brightness near 1.0 or the blue washes out. */
+  scene.add(new THREE.AmbientLight(0xffffff, 0.42));
+  const key = new THREE.DirectionalLight(0xfff4e0, 0.62);
   key.position.set(0.6, 1.2, 0.9);
   scene.add(key);
-  const rim = new THREE.DirectionalLight(0x88aaff, 0.6);
+  const rim = new THREE.DirectionalLight(0x88aaff, 0.30);
   rim.position.set(-0.8, 0.5, -0.6);
   scene.add(rim);
 
-  const domeMat = new THREE.MeshStandardMaterial({ color: BLUE, roughness: 0.85, metalness: 0, flatShading: true });
-  const mustardMat = new THREE.MeshStandardMaterial({ color: MUSTARD, roughness: 0.85, metalness: 0, flatShading: true });
+  /* One colour for the whole structure, exactly as in the mockup: the painting's
+     own deep blue, flat-shaded. The old build scattered mustard junction caps
+     and a wobble/jitter pass through the geometry; both read as "not the mockup". */
+  const blueMat = new THREE.MeshStandardMaterial({
+    color: BLUE, roughness: 0.82, metalness: 0, flatShading: true,
+  });
 
-  const rand = mulberry32(20261010);
-
-  /* gazebo skeleton: vertices at base / eave / apex rings */
-  const jitter = (amp) => (rand() - 0.5) * amp;
+  /* rings at base / eave / apex */
   const base = [], eave = [], apex = [];
   for (let i = 0; i < SIDES; i++) {
     const a = (i / SIDES) * Math.PI * 2;
-    const rb = R * (1 + jitter(0.05));
-    base.push(new THREE.Vector3(Math.cos(a) * rb, 0, Math.sin(a) * rb));
-    const re = R * (1 + jitter(0.04));
-    eave.push(new THREE.Vector3(Math.cos(a) * re, WALL_H * (1 + jitter(0.06)), Math.sin(a) * re));
-    const ra = APEX_R * (1 + jitter(0.08));
-    apex.push(new THREE.Vector3(Math.cos(a) * ra, WALL_H + ROOF_H * (1 + jitter(0.08)), Math.sin(a) * ra));
+    const c = Math.cos(a), s = Math.sin(a);
+    base.push(new THREE.Vector3(c * R, 0, s * R));
+    eave.push(new THREE.Vector3(c * R, WALL_H, s * R));
+    apex.push(new THREE.Vector3(c * APEX_R, WALL_H + ROOF_H, s * APEX_R));
   }
 
-  /* merge every strut + node into ONE geometry (one draw call) */
+  /* merge every tube into ONE geometry (one draw call) */
   const geos = [];
   const up = new THREE.Vector3(0, 1, 0);
-  function strut(a, b, weight = 1) {
-    const r = STROKE * weight * (0.8 + rand() * 0.4);   /* hand-drawn weight variance */
-    const g = new THREE.CylinderGeometry(r, r, a.distanceTo(b), 6, 1, false).toNonIndexed();
-    const m = new THREE.Matrix4();
+  function strut(a, b) {
+    const len = a.distanceTo(b);
+    if (len < 1e-6) return;
+    const g = new THREE.CylinderGeometry(STROKE, STROKE, len, 6, 1, false).toNonIndexed();
     const q = new THREE.Quaternion().setFromUnitVectors(up, b.clone().sub(a).normalize());
-    m.compose(a.clone().add(b).multiplyScalar(0.5), q, new THREE.Vector3(1, 1, 1));
-    g.applyMatrix4(m);
+    g.applyMatrix4(new THREE.Matrix4().compose(
+      a.clone().add(b).multiplyScalar(0.5), q, new THREE.Vector3(1, 1, 1)));
     geos.push(g);
   }
-  const mustardNodes = [];
-  function node(p, accent) {
-    const g = new THREE.IcosahedronGeometry(STROKE * 1.7, 0).toNonIndexed();
+  function joint(p) {
+    const g = new THREE.IcosahedronGeometry(STROKE * 1.7, 0);
     g.translate(p.x, p.y, p.z);
-    if (accent) { const mesh = new THREE.Mesh(g, mustardMat); mustardNodes.push(mesh); root.add(mesh); }
-    else geos.push(g);
+    geos.push(g);
   }
-
-  const accentIdx = new Set();
-  while (accentIdx.size < 3) accentIdx.add(Math.floor(rand() * SIDES));
 
   for (let i = 0; i < SIDES; i++) {
     const j = (i + 1) % SIDES;
-    strut(base[i], eave[i]);                 /* pillar */
+    strut(base[i], eave[i]);                 /* post */
     strut(eave[i], eave[j]);                 /* eave band */
     strut(eave[i], apex[i]);                 /* rafter */
-    strut(apex[i], apex[j], 0.9);            /* apex ring */
-    strut(base[i], base[j]);                 /* base ring */
-    if (i % 2 === 0) strut(base[i], eave[j], 0.7);  /* light diagonal braces, alternating */
-    node(eave[i], accentIdx.has(i));         /* junction caps at the eave */
+    strut(apex[i], apex[j]);                 /* apex ring */
+    strut(base[i], base[j]);                 /* base ring on the canvas */
+    if (i % 2 === 0) strut(base[i], eave[j]); /* alternating brace, as in the mockup */
+    joint(base[i]); joint(eave[i]); joint(apex[i]);
   }
 
   const dome = new THREE.Group();
-  dome.add(new THREE.Mesh(mergeGeometries(geos, false), domeMat));
+  dome.add(new THREE.Mesh(mergeGeometries(geos, false), blueMat));
 
-  /* faint roof shell so the volume reads */
+  /* faint roof shell so the volume reads without hiding the painting */
   const roofShell = new THREE.Mesh(
     new THREE.ConeGeometry(R * 1.0, ROOF_H, SIDES, 1, true),
-    new THREE.MeshStandardMaterial({ color: BLUE, transparent: true, opacity: 0.07, flatShading: true, side: THREE.DoubleSide, depthWrite: false })
+    new THREE.MeshStandardMaterial({ color: BLUE, transparent: true, opacity: 0.06,
+      flatShading: true, side: THREE.DoubleSide, depthWrite: false })
   );
   roofShell.position.y = WALL_H + ROOF_H / 2;
   dome.add(roofShell);
@@ -178,7 +207,7 @@ function buildScene(scene) {
 
   const floor = new THREE.Mesh(
     new THREE.CircleGeometry(R * 0.96, SIDES * 2),
-    new THREE.MeshBasicMaterial({ color: BLUE_DARK, transparent: true, opacity: 0.18, depthWrite: false })
+    new THREE.MeshBasicMaterial({ color: BLUE_DARK, transparent: true, opacity: 0.16, depthWrite: false })
   );
   floor.rotation.x = -Math.PI / 2; floor.position.y = 0.001;
   root.add(floor);
@@ -186,29 +215,29 @@ function buildScene(scene) {
   /* ---------- cat (blue linework = structure/predator) ---------- */
   function makeCat() {
     const c = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.IcosahedronGeometry(0.030, 0), domeMat);
+    const body = new THREE.Mesh(new THREE.IcosahedronGeometry(0.040, 0), blueMat);
     body.scale.set(1.5, 1.0, 0.9);
     c.add(body);
-    const head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.020, 0), domeMat);
-    head.position.set(0.042, 0.016, 0);
+    const head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.027, 0), blueMat);
+    head.position.set(0.057, 0.021, 0);
     c.add(head);
-    const earGeo = new THREE.ConeGeometry(0.009, 0.018, 4);
-    const earL = new THREE.Mesh(earGeo, domeMat); earL.position.set(0.042, 0.038, 0.010);
-    const earR = new THREE.Mesh(earGeo, domeMat); earR.position.set(0.042, 0.038, -0.010);
+    const earGeo = new THREE.ConeGeometry(0.012, 0.024, 4);
+    const earL = new THREE.Mesh(earGeo, blueMat); earL.position.set(0.057, 0.051, 0.013);
+    const earR = new THREE.Mesh(earGeo, blueMat); earR.position.set(0.057, 0.051, -0.013);
     c.add(earL, earR);
-    const eyeGeo = new THREE.IcosahedronGeometry(0.004, 0);
+    const eyeGeo = new THREE.IcosahedronGeometry(0.0045, 0);
     const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffe08a });
-    const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(0.058, 0.020, 0.009);
-    const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.058, 0.020, -0.009);
+    const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(0.079, 0.028, 0.012);
+    const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.079, 0.028, -0.012);
     c.add(eL, eR);
-    const legGeo = new THREE.ConeGeometry(0.006, 0.026, 4);
-    [[0.022, 0.012], [0.022, -0.012], [-0.026, 0.012], [-0.026, -0.012]].forEach(p => {
-      const leg = new THREE.Mesh(legGeo, domeMat);
-      leg.rotation.x = Math.PI; leg.position.set(p[0], -0.026, p[1]);
+    const legGeo = new THREE.ConeGeometry(0.008, 0.035, 4);
+    [[0.030, 0.015], [0.030, -0.015], [-0.036, 0.015], [-0.036, -0.015]].forEach(p => {
+      const leg = new THREE.Mesh(legGeo, blueMat);
+      leg.rotation.x = Math.PI; leg.position.set(p[0], -0.034, p[1]);
       c.add(leg);
     });
-    const tail = new THREE.Mesh(new THREE.TorusGeometry(0.020, 0.005, 4, 8, Math.PI * 1.1), domeMat);
-    tail.position.set(-0.048, 0.012, 0); tail.rotation.y = Math.PI / 2;
+    const tail = new THREE.Mesh(new THREE.TorusGeometry(0.027, 0.006, 4, 8, Math.PI * 1.1), blueMat);
+    tail.position.set(-0.064, 0.016, 0); tail.rotation.y = Math.PI / 2;
     c.add(tail);
     c.userData.tail = tail;
     return c;
@@ -217,25 +246,25 @@ function buildScene(scene) {
   function makeMouse() {
     const m = new THREE.Group();
     const mat = new THREE.MeshStandardMaterial({ color: GREEN, roughness: 0.85, metalness: 0, flatShading: true });
-    const body = new THREE.Mesh(new THREE.IcosahedronGeometry(0.014, 0), mat);
+    const body = new THREE.Mesh(new THREE.IcosahedronGeometry(0.019, 0), mat);
     body.scale.set(1.6, 0.9, 0.9);
     m.add(body);
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.006, 0.014, 4), mat);
-    nose.rotation.z = -Math.PI / 2; nose.position.set(0.026, 0, 0);
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.008, 0.019, 4), mat);
+    nose.rotation.z = -Math.PI / 2; nose.position.set(0.036, 0, 0);
     m.add(nose);
-    const earGeo = new THREE.IcosahedronGeometry(0.006, 0);
-    const earL = new THREE.Mesh(earGeo, mat); earL.position.set(0.006, 0.012, 0.008);
-    const earR = new THREE.Mesh(earGeo, mat); earR.position.set(0.006, 0.012, -0.008);
+    const earGeo = new THREE.IcosahedronGeometry(0.008, 0);
+    const earL = new THREE.Mesh(earGeo, mat); earL.position.set(0.008, 0.017, 0.011);
+    const earR = new THREE.Mesh(earGeo, mat); earR.position.set(0.008, 0.017, -0.011);
     m.add(earL, earR);
-    const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.001, 0.045, 4), mat);
-    tail.rotation.z = Math.PI / 2 - 0.4; tail.position.set(-0.032, 0.004, 0);
+    const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.0012, 0.060, 4), mat);
+    tail.rotation.z = Math.PI / 2 - 0.4; tail.position.set(-0.043, 0.006, 0);
     m.add(tail);
     return m;
   }
 
   const cat = makeCat();
   const mouse = makeMouse();
-  const catY = 0.038, mouseY = 0.016;
+  const catY = 0.050, mouseY = 0.020;
   cat.position.y = catY; mouse.position.y = mouseY;
   root.add(cat, mouse);
 
@@ -248,12 +277,12 @@ const actors = (() => {
   let state = 'CHASE', stateT = 0, chaseDur = 7;
   let mV = 1.6, cV = 0;
   return {
-    step(dt, t) {
+    step(dt) {
       stateT += dt;
       if (state === 'CHASE') {
         mV = 1.6 * MOTION;
         mA += dir * mV * dt;
-        let d = (mA - cA) * dir;
+        const d = (mA - cA) * dir;
         cV = (d * 4.0 + 0.9) * MOTION;
         cA += dir * cV * dt;
         if (stateT > chaseDur) { state = 'FREEZE'; stateT = 0; mV = 0; }
@@ -267,27 +296,24 @@ const actors = (() => {
           state = 'CHASE'; stateT = 0;
           dir *= -1;                       /* mouse bolts the other way */
           chaseDur = 6 + Math.random() * 4;
-          /* swap leader: cat now ahead gets chased past */
-          const gap = 0.6;
-          cA = mA + dir * gap;
+          cA = mA + dir * 0.6;             /* cat is now ahead */
         }
       }
-      return { mA, cA, dir, state };
+      return { mA, cA, state };
     }
   };
 })();
 
 function animateActors(A, dt, t) {
-  const { mA, cA, state } = actors.step(dt, t);
-  const wob = Math.sin(t * 2.2) * 0.05;  /* weave crosses the far arc */
-  const mr = ORBIT * (1 + wob);
+  const { mA, cA, state } = actors.step(dt);
+  const wob = Math.sin(t * 2.2) * 0.05;  /* weave */
   const moving = state === 'CHASE' ? 1 : 0;
+  const mr = ORBIT * (1 + wob);
   A.mouse.position.set(Math.cos(mA) * mr, A.mouseY + Math.abs(Math.sin(t * 14)) * 0.006 * moving, Math.sin(mA) * mr);
   A.mouse.rotation.y = -mA - Math.PI / 2 + Math.sin(t * 9) * 0.15 * moving;
   const cr = ORBIT * (1 - wob * 0.5);
   A.cat.position.set(Math.cos(cA) * cr, A.catY + Math.abs(Math.sin(t * 10)) * 0.008 * moving, Math.sin(cA) * cr);
   A.cat.rotation.y = -cA - Math.PI / 2;
-  /* tail flicks: calm while chasing, agitated in standoff */
   const flick = state === 'STANDOFF' ? 1.8 : 1.0;
   A.cat.userData.tail.rotation.x = Math.sin(t * 6 * flick) * 0.4 * flick;
   if (!REDUCED) {
@@ -296,16 +322,51 @@ function animateActors(A, dt, t) {
   }
 }
 
+/* ---------- ?debug=1: draw the tracked target frame so alignment is checkable
+   on a real device. Built directly in anchor space, so it must land exactly on
+   the painting in the camera feed — if it does not, tracking (or a mismatch
+   between the .mind target and the artwork) is at fault, not the scene. ---------- */
+function buildTargetFrame() {
+  const g = new THREE.Group();
+  const mk = (pts, color, opacity) => {
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    g.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity })));
+  };
+  const hx = 0.5, hy = ART_H / 2;
+  mk([new THREE.Vector3(-hx, -hy, 0), new THREE.Vector3(hx, -hy, 0),
+      new THREE.Vector3(hx, hy, 0), new THREE.Vector3(-hx, hy, 0),
+      new THREE.Vector3(-hx, -hy, 0)], 0x00ffff, 0.95);
+  for (let i = 1; i < 8; i++) {
+    const x = -hx + i / 8;
+    mk([new THREE.Vector3(x, -hy, 0), new THREE.Vector3(x, hy, 0)], 0x00ffff, 0.35);
+  }
+  for (let i = 1; i < 6; i++) {
+    const y = -hy + (i / 6) * ART_H;
+    mk([new THREE.Vector3(-hx, y, 0), new THREE.Vector3(hx, y, 0)], 0x00ffff, 0.35);
+  }
+  /* axes: +x right (red), +y up the image (blue), +z out of the painting (green) */
+  mk([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.3, 0, 0)], 0xff3355, 1);
+  mk([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0.3, 0)], 0x4488ff, 1);
+  mk([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0.3)], 0x33ff88, 1);
+  return g;
+}
+
 /* ---------- boot: AR, or orbit-preview fallback ---------- */
 const clock = new THREE.Clock();
+const container = document.querySelector('#ar-container');
+
+function onResize(cb) {
+  window.addEventListener('resize', cb);
+  window.addEventListener('orientationchange', () => setTimeout(cb, 300));
+}
 
 async function startAR() {
   const targetUrl = await loadTarget();
   const mindarThree = new MindARThree({
-    container: document.querySelector('#ar-container'),
+    container,
     imageTargetSrc: targetUrl,
-    filterMinCF: 0.001,
-    filterBeta: 0.01,
+    filterMinCF: 0.0001,
+    filterBeta: 0.001,
     missTolerance: 10,
     warmupTolerance: 5,
     renderer: { powerPreference: 'high-performance' },
@@ -316,29 +377,78 @@ async function startAR() {
 
   const anchor = mindarThree.addAnchor(0);
   const A = buildScene(scene);
-  anchor.group.add(A.root);
-  /* dome grows from the painting's green junction node, not dead-center */
-  A.root.position.set(-0.10, 0, -0.05);
+  anchor.group.add(toAnchorSpace(A.root));   /* author y-up -> MindAR's XY image plane */
+  const frame = buildTargetFrame();
+  frame.visible = DEBUG;
+  anchor.group.add(frame);
 
-  anchor.onTargetFound = () => hint.classList.add('hidden');
-  anchor.onTargetLost = () => hint.classList.remove('hidden');
+  anchor.onTargetFound = () => {
+    hint.classList.add('hidden');
+    if (DEBUG) debugEl.dataset.found = '1';
+  };
+  anchor.onTargetLost = () => {
+    hint.classList.remove('hidden');
+    if (DEBUG) debugEl.dataset.found = '0';
+  };
+
+  /* Alignment probe used by tools/align_test.py and ?debug=1.
+     - quad: the target-image rectangle projected to screen pixels. If these do
+       not land on the painting's corners, tracking is at fault.
+     - upDot: the scene's own up axis vs the painting normal, in camera space.
+       It must be ~+1: the structure stands OUT of the painting. Authored in the
+       wrong frame it is ~0 and the structure lies flat on the artwork. */
+  window.__alignProbe = () => {
+    const hx = 0.5, hy = ART_H / 2;
+    /* TL, TR, BR, BL in image order (+y is up the image) */
+    const pts = [[-hx, hy], [hx, hy], [hx, -hy], [-hx, -hy]];
+    const v = new THREE.Vector3();
+    const normal = new THREE.Vector3(0, 0, 1)
+      .transformDirection(anchor.group.matrixWorld).normalize();
+    const up = new THREE.Vector3(0, 1, 0)
+      .transformDirection(A.root.matrixWorld).normalize();
+    return {
+      mode: window.__mode,
+      targetFound: hint.classList.contains('hidden'),
+      quad: pts.map(([x, y]) => {
+        v.set(x, y, 0).applyMatrix4(anchor.group.matrixWorld).project(camera);
+        return [Math.round((v.x * 0.5 + 0.5) * container.clientWidth),
+                Math.round((-v.y * 0.5 + 0.5) * container.clientHeight)];
+      }),
+      upDot: Math.round(up.dot(normal) * 1000) / 1000,
+      /* the base ring must stay inside the painting (1.0 x ART_H) */
+      footprintFits: (2 * R <= 1.0) && (2 * R <= ART_H),
+      viewport: [container.clientWidth, container.clientHeight],
+      video: [mindarThree.video ? mindarThree.video.videoWidth : 0,
+              mindarThree.video ? mindarThree.video.videoHeight : 0],
+      params: { R, WALL_H, ROOF_H, APEX_R, ART_H },
+    };
+  };
 
   await mindarThree.start();
   /* MindAR computes the camera projection in resize(), which can fire before the
      video stream is ready — leaving a default FOV that misplaces the anchor.
      Re-run it once the stream is live and on orientation changes. */
   mindarThree.resize();
-  window.addEventListener('orientationchange', () => setTimeout(() => mindarThree.resize(), 300));
+  onResize(() => mindarThree.resize());
+
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.05);
     animateActors(A, dt, clock.elapsedTime);
     renderer.render(scene, camera);
+    if (DEBUG) {
+      const m = anchor.group.matrix.elements;
+      debugEl.textContent =
+        `target: ${anchor.group.visible ? 'visible' : 'hidden'}\n` +
+        `found:  ${debugEl.dataset.found === '1' ? 'yes' : 'no'}\n` +
+        `anchor x=${m[12].toFixed(3)} y=${m[13].toFixed(3)} z=${m[14].toFixed(3)}\n` +
+        `root   x=${ROOT_OFFSET.x} z=${ROOT_OFFSET.z}\n` +
+        `ring R=${R}  wall=${WALL_H}  roof=${ROOF_H}`;
+    }
   });
 }
 
 function startPreview() {
   hint.textContent = 'Camera unavailable — drag to explore the augment';
-  const container = document.querySelector('#ar-container');
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
   renderer.setSize(container.clientWidth, container.clientHeight);
@@ -347,7 +457,7 @@ function startPreview() {
   const scene = new THREE.Scene();
   /* the artwork as the ground plane the dome sits on (chunked jpg, reassembled) */
   (async () => {
-    const bufs = await Promise.all(['aa','ab','ac'].map(async p =>
+    const bufs = await Promise.all(['aa', 'ab', 'ac'].map(async p =>
       new Uint8Array(await (await fetch('./artwork-target.jpg.' + p)).arrayBuffer())));
     const total = bufs.reduce((n, p) => n + p.length, 0);
     const buf = new Uint8Array(total);
@@ -360,24 +470,24 @@ function startPreview() {
         new THREE.PlaneGeometry(1, 1 / aspect),
         new THREE.MeshBasicMaterial({ map: tex })
       );
-      art.rotation.x = -Math.PI / 2;
+      art.rotation.x = -Math.PI / 2;   /* texture top -> -z, so +z = down the image */
       scene.add(art);
     });
   })();
   const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.01, 10);
   camera.position.set(0.62, 0.78, 1.05);
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0.02, 0.1, -0.06);
+  controls.target.set(0.02, 0.10, -0.06);
   controls.enableDamping = true;
 
   const A = buildScene(scene);
-  A.root.position.set(-0.10, 0, -0.05);
 
-  window.addEventListener('resize', () => {
+  const resize = () => {
     camera.aspect = container.clientWidth / container.clientHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(container.clientWidth, container.clientHeight);
-  });
+  };
+  onResize(resize);
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.05);
     animateActors(A, dt, clock.elapsedTime);
@@ -386,8 +496,21 @@ function startPreview() {
   });
 }
 
-startAR().catch(err => {
+/* Probe hooks for the headless smoke test / alignment harness. */
+window.__probe = () => ({
+  mode: window.__mode,
+  anchorFound: document.getElementById('hint').classList.contains('hidden'),
+  R, WALL_H, ROOF_H, APEX_R,
+});
+
+startAR().then(() => { window.__mode = 'ar'; }).catch(err => {
   console.warn('AR start failed, falling back to preview:', err);
+  /* MindAR has already injected its <video> (into our container) and its
+     loading/scanning overlays (into document.body) by the time start() fails;
+     drop both or the preview renders underneath a stuck spinner. */
+  container.innerHTML = '';
+  document.querySelectorAll('.mindar-ui-overlay').forEach(el => el.remove());
+  window.__mode = 'preview';
   startPreview();
 });
 </script>
