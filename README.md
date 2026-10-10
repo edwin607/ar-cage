@@ -1,10 +1,14 @@
-# AR Dome — artwork augment
+# AR Cage — artwork augment (cage design test build)
 
 Point your phone camera at the painting and a low-poly cask cage in the same blue
 as the artwork's linework anchors to it in AR — a pink cloth thrown over one end,
 and a low-poly cat chasing a mouse along the floor inside.
 
-**Live:** https://edwin607.github.io/ar-dome/
+**Live (this build):** https://edwin607.github.io/ar-cage/
+
+This is the **cage** design, kept in its own repo so it can be tested on a phone
+without disturbing the other builds. The original page is at
+<https://edwin607.github.io/ar-dome/>.
 
 ## How it works
 - [MindAR](https://github.com/hiukim/mind-ar) image tracking (three.js build, pinned to three@0.150.1) anchors the scene to the artwork.
@@ -66,15 +70,31 @@ by more than the ring radius). The sketch supersedes it.
 ## Repository layout
 - `index.html` — the whole AR experience (single file, CDN dependencies)
 - `artwork.mind.gz.aa–ad` + `artwork.mind.manifest.json` — chunked image target
-- `artwork-target.jpg.aa–ac` — chunked artwork photo (preview fallback ground plane)
+- `artwork-target.jpg.aa–ac` + `artwork-target.manifest.json` — chunked artwork photo (preview fallback ground plane; the page reads the part list from the manifest)
 - `tools/` — the pipeline: compile a new target, chunk binaries, smoke-test the page, alignment regression test
 - `SKILL.md` — full pipeline documentation (ar-image-augment agent skill)
 
 ## Retargeting to a new image
-1. Crop the new artwork photo tight to its edges, ≤ ~900px long side → `artwork-target.jpg`
+
+**Rectify first.** MindAR assumes the target image is a fronto-parallel view of a
+plane. A photo taken at an angle bakes that angle into the anchor pose, so the
+augment stands at a tilt no amount of scene tuning can remove. Warp the four
+canvas corners to the canvas's *physical* aspect ratio (the current target is a
+7x5in canvas → 900x643, aspect 1.4).
+
+1. Warp the new photo's canvas corners to the physical aspect → `artwork-target.jpg`, ≤ ~900px long side
 2. `uv run --with playwright python tools/compile_target.py artwork-target.jpg --out artwork.mind`
 3. `gzip -9 -c artwork.mind > artwork.mind.gz && python tools/chunk.py artwork.mind.gz artwork.mind.gz --manifest artwork.mind.manifest.json`
-4. Re-chunk the jpg: `python tools/chunk.py artwork-target.jpg artwork-target.jpg`
-5. Resize the scene to the new aspect: the painting spans `1.0 x (h/w)`, and the scene root stays at the anchor origin
+4. `python tools/chunk.py artwork-target.jpg artwork-target.jpg --manifest artwork-target.manifest.json`
+5. Update `TARGET_AR` in `index.html` (the painting spans `1.0 x (h/w)` in anchor space); the scene root stays at the anchor origin
 6. `uv run --with playwright python tools/smoke_test.py <url> --deny-camera` — require `errors: none`
 7. `uv run --with playwright --with pillow --with numpy --with opencv-python-headless python tools/align_test.py <url>` — require `RESULT: PASS`
+8. Push and let Pages rebuild (~1 min)
+
+## Testing on a phone
+1. Open <https://edwin607.github.io/ar-cage/> in Safari/Chrome over HTTPS
+2. Allow the camera, then point it at the painting — the cask cage should settle onto it
+3. Append `?debug=1` to draw the tracked target frame and axes: the cyan outline
+   must sit on the painting's edges. If it does not, it is tracking, not the scene.
+4. Append params to tune live without a redeploy, e.g.
+   `?yaw=1.5708` (axis into the painting), `?radius=0.19`, `?endTaper=0.5`, `?length=0.42`
