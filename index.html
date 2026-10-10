@@ -32,9 +32,13 @@ const BLUE_DARK = 0x202860;
 const { MindARThree } = window.MINDAR.IMAGE;
 const THREE = window.MINDAR.IMAGE.THREE;
 
-/* the image target ships gzipped; decompress in-browser */
+/* the image target ships gzipped & chunked (repo file-size friendly); reassemble + decompress in-browser */
 async function loadTarget() {
-  const buf = await (await fetch('./artwork.mind.gz')).arrayBuffer();
+  const parts = await Promise.all(['aa','ab','ac','ad','ae'].map(async p =>
+    new Uint8Array(await (await fetch('./artwork.mind.gz.' + p)).arrayBuffer())));
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const buf = new Uint8Array(total);
+  let off = 0; for (const p of parts) { buf.set(p, off); off += p.length; }
   const ds = new DecompressionStream('gzip');
   const plain = await new Response(new Blob([buf]).stream().pipeThrough(ds)).arrayBuffer();
   return URL.createObjectURL(new Blob([plain]));
