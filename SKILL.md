@@ -77,4 +77,4 @@ if this frame is wrong.
 - `tools/chunk.py` — split binary into `<prefix>.aa/.ab/...` + manifest
 - `tools/smoke_test.py` — headless boot test with optional fake camera + screenshot
 - `tools/align_test.py` — alignment regression test; feeds a synthetic camera view of the painting via a canvas MediaStream and asserts the anchor frame lands on it and the augment stands on it
-- `index.html` — reference page (gazebo augment, cat/mouse chase, all fixes applied)
+- `index.html` — reference page (cask-cage augment, cat/mouse chase, all fixes applied)

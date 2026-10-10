@@ -1,8 +1,8 @@
 # AR Dome — artwork augment
 
-Point your phone camera at the painting and a low-poly hooped cage in the same
-blue as the artwork's linework anchors to it in AR — a pink cloth thrown over one
-end, and a low-poly cat chasing a mouse along the floor inside.
+Point your phone camera at the painting and a low-poly cask cage in the same blue
+as the artwork's linework anchors to it in AR — a pink cloth thrown over one end,
+and a low-poly cat chasing a mouse along the floor inside.
 
 **Live:** https://edwin607.github.io/ar-dome/
 
@@ -33,22 +33,28 @@ the "not aligning" bug. See SKILL.md for the full write-up.
 
 ## The cage (from the artist's sketch)
 
-Measuring the sketch in the reference photo gives ~7 distinct horizontal member
-levels, a vertical member at each end, an overall length/height of ~1.14, and a
-pink cloth over the near end. A **12-sided section is what yields exactly 7
-distinct rail heights** under projection (cos 15/45/75°), so the cage is a
-12-gon barrel: 12 longitudinal rails, hoops at both ends and mid-length, resting
-its whole underside on the canvas.
+Measuring the sketch's ink in the reference photo, as vertical extent per column:
+**245px at the near end, 415px at mid-length, 170px at the far end.** The belly is
+the widest point and *both* ends draw in — so this is a cask, not a cone and not a
+cylinder. The far end reads smaller still because it is further away.
+
+A **12-sided section is what yields exactly 7 distinct member levels** under
+projection (cos 15/45/75°), and the sketch shows ~7, so the cage is a 12-gon cask:
+12 longitudinal rails over a barrel profile, hooped along its length, resting on
+its belly, with a pink cloth thrown over the near end.
 
 | parameter | value | note |
 |---|---|---|
 | `length` | `0.50` | along the axis, in painting widths |
-| `radius` | `0.215` | section circumradius at the near end |
-| `taper` | `0.82` | far-end radius / near-end radius |
-| `sides` | `12` | gives the sketch's 7 rail levels |
-| `stroke` | `0.0042` | member radius — matches the painting's line weight |
+| `radius` | `0.215` | section circumradius at the belly |
+| `endTaper` | `0.42` | ends sit at 0.58 of the belly radius |
+| `sides` | `12` | gives the sketch's ~7 member levels |
+| `stroke` | `0.0058` | member radius — matches the painting's line weight |
 | `yaw` | `0` | `0` = axis across the painting, `PI/2` = axis into it |
-| `drapeFlare` / `drapeSag` | `1.20` / `0.055` | cloth over the near end |
+| `drapeFlare` / `drapeSag` | `1.22` / `0.080` | cloth over the near end |
+
+Every parameter is overridable from the URL, so the shape can be tuned on a phone
+next to the painting: `?yaw=1.5708&length=0.42&radius=0.19&endTaper=0.5`.
 
 ![Cage from the sketch](docs/cage-from-sketch.png)
 

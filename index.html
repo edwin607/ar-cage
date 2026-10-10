@@ -117,18 +117,23 @@ const ART_H = 1 / TARGET_AR;      /* 0.7222 — painting height in anchor units 
    a 12-sided barrel lying on the canvas. */
 const CAGE = {
   length: 0.50,        /* along the axis, in painting widths */
-  radius: 0.215,       /* section circumradius at the near end */
-  taper: 0.82,         /* far-end radius / near-end radius (the sketch tapers) */
-  belly: 0.05,         /* slight barrel bulge mid-length */
-  sides: 12,
-  stroke: 0.0042,      /* member thickness — matches the painting's line weight */
+  radius: 0.215,       /* section circumradius at the belly (mid-length) */
+  /* Measured off the sketch's ink, as vertical extent per column: 245px at the
+     near end, 415px at mid-length, 170px at the far end. The belly is the widest
+     point and BOTH ends draw in, so this is a cask — not a cone, and not a
+     cylinder. endTaper 0.42 puts the ends at 0.58 of the belly, matching the
+     near end; the far end reads smaller still because it is further away. */
+  endTaper: 0.42,
+  sides: 12,           /* 12-gon: gives the sketch's ~7 distinct member levels */
+  stroke: 0.0058,      /* member thickness — matches the painting's line weight */
   yaw: 0,              /* 0 = axis across the painting, PI/2 = axis into it */
-  drapeDepth: 0.075,   /* how far the cloth spills past the near end */
-  drapeFlare: 1.20,
-  drapeSag: 0.055,
+  drapeDepth: 0.070,   /* how far the cloth spills past the near end */
+  drapeFlare: 1.22,
+  drapeSag: 0.080,
 };
-CAGE.centreY = CAGE.radius * (1 + CAGE.belly) * Math.cos(Math.PI / CAGE.sides);
-/* the cat and mouse circle the floor inside the barrel */
+/* Height of the cask's axis at its belly — the tallest point of the silhouette */
+CAGE.centreY = CAGE.radius * Math.cos(Math.PI / CAGE.sides);
+/* the cat and mouse circle the floor inside the cask */
 const ORBIT = 0.090;
 
 /* Every cage parameter can be overridden from the URL while art-directing, e.g.
@@ -189,21 +194,21 @@ function buildScene(scene) {
   });
 
   /* ---------- the cage, from the artist's sketch ------------------------------
-     The sketch measures out as: ~7 distinct horizontal member levels, a vertical
-     member at each end, an overall length/height ratio of ~1.14, and a pink cloth
-     draped over the near end. A 12-sided section is what produces exactly 7
-     distinct rail heights under projection (cos 15/45/75 deg give 7 levels), so
-     the cage is a 12-gon barrel: 12 longitudinal rails, hoops at both ends and
-     mid-length, resting its belly on the canvas. */
+     Measured off the sketch: ~7 distinct horizontal member levels, a vertical
+     member at each end, a length/height ratio of ~1.14, a belly that is the
+     widest point with both ends drawn in, and a pink cloth over the near end.
+     A 12-sided section is what produces exactly 7 distinct rail heights under
+     projection (cos 15/45/75 deg), so the cage is a 12-gon cask: 12 longitudinal
+     rails over a barrel profile, hooped along its length, resting on its belly. */
   const sides = CAGE.sides;
   const halfL = CAGE.length / 2;
 
-  /* section radius along the axis: a slight barrel belly, tapering to the far end */
-  const radiusAt = (t) => CAGE.radius * (1 - (1 - CAGE.taper) * t)
-                           * (1 + CAGE.belly * Math.sin(Math.PI * t));
+  /* cask profile: fattest at mid-length, both ends drawn in */
+  const radiusAt = (t) => CAGE.radius * (1 - CAGE.endTaper * (2 * t - 1) ** 2);
 
-  /* Each station is lifted so the lowest facet rests exactly on the canvas: the
-     barrel's whole underside touches the artwork instead of floating at the tip. */
+  /* Each station is lifted so the lowest facet rests on the canvas. With a barrel
+     profile that means the belly carries the cask — the ends lift slightly, which
+     is how a cask actually sits. */
   const sectionAt = (t) => {
     const r = radiusAt(t);
     const x = -halfL + t * CAGE.length;
@@ -215,8 +220,8 @@ function buildScene(scene) {
     }
     return pts;
   };
-  const STATIONS = [0, 0.25, 0.5, 0.75, 1];
-  const HOOPS = [0, 0.5, 1];
+  const STATIONS = [0, 1 / 8, 2 / 8, 3 / 8, 4 / 8, 5 / 8, 6 / 8, 7 / 8, 1];
+  const HOOPS = [0, 0.25, 0.5, 0.75, 1];
   const sections = STATIONS.map(sectionAt);
 
   /* merge every member + joint into ONE geometry (one draw call) */
@@ -259,7 +264,9 @@ function buildScene(scene) {
     const a = (k + 0.5) * 2 * Math.PI / sides;
     /* deterministic irregularity — a hand-thrown cloth, not a lathe */
     const wobble = 1 + 0.10 * Math.sin(k * 2.7) + 0.06 * Math.cos(k * 4.1);
-    const rr = nearR * CAGE.drapeFlare * wobble;
+    /* sized off the BELLY, not the near ring: in the sketch the cloth reaches
+       well past the cage on every side, not hugging the small end */
+    const rr = CAGE.radius * CAGE.drapeFlare * wobble;
     /* the hem hangs lower where the cloth is not pinned (cos a < 0), and spills
        further out in places, so the outline stays soft instead of lathe-like */
     const hemDrop = CAGE.drapeSag * (0.35 + 0.65 * Math.max(0, -Math.cos(a))) * wobble;
@@ -280,7 +287,7 @@ function buildScene(scene) {
      sketch's pink is a flat marker colour anyway. depthWrite off so the cage
      reads through it, the way it does in the drawing. */
   cage.add(new THREE.Mesh(drapeGeo, new THREE.MeshBasicMaterial({
-    color: DRAPE, side: THREE.DoubleSide, transparent: true, opacity: 0.62,
+    color: DRAPE, side: THREE.DoubleSide, transparent: true, opacity: 0.58,
     depthWrite: false,
   })));
 
