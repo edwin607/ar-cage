@@ -50,7 +50,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 /* Palette sampled from the artwork's linework */
 const BLUE = 0x2a3670;
-const BLUE_DARK = 0x202860;
+const DRAPE = 0xc0505f;      /* the cloth in the sketch: rgb(210, 96, 112) */
 const GREEN = 0x5bbf8a;
 
 const DEBUG = new URLSearchParams(location.search).has('debug');
@@ -109,14 +109,36 @@ async function loadTarget() {
 const TARGET_AR = 900 / 650;
 const ART_H = 1 / TARGET_AR;      /* 0.7222 — painting height in anchor units */
 
-/* Gazebo proportions measured off the rendered mockup (see README). */
-const R = 0.34;                   /* base/eave ring radius — Ø 0.68 of the painting */
-const WALL_H = 0.24;              /* post height */
-const ROOF_H = 0.19;              /* roof rise above the eave */
-const APEX_R = 0.15;              /* small ring at the top */
-const SIDES = 8;
-const STROKE = 0.0045;            /* tube radius — matches the painting's line weight */
-const ORBIT = R * 0.50;           /* cat/mouse chase radius, inside the posts */
+/* ---------- the cage: proportions read off the artist's sketch -------------
+   Measured from the sketch (reference photo, lower half): ~7 distinct
+   horizontal member levels, a vertical member at each end, overall
+   length/height ~1.14, and a pink cloth over the near end. A 12-gon section is
+   what yields exactly 7 distinct rail heights under projection, so the cage is
+   a 12-sided barrel lying on the canvas. */
+const CAGE = {
+  length: 0.50,        /* along the axis, in painting widths */
+  radius: 0.215,       /* section circumradius at the near end */
+  taper: 0.82,         /* far-end radius / near-end radius (the sketch tapers) */
+  belly: 0.05,         /* slight barrel bulge mid-length */
+  sides: 12,
+  stroke: 0.0042,      /* member thickness — matches the painting's line weight */
+  yaw: 0,              /* 0 = axis across the painting, PI/2 = axis into it */
+  drapeDepth: 0.075,   /* how far the cloth spills past the near end */
+  drapeFlare: 1.20,
+  drapeSag: 0.055,
+};
+CAGE.centreY = CAGE.radius * (1 + CAGE.belly) * Math.cos(Math.PI / CAGE.sides);
+/* the cat and mouse circle the floor inside the barrel */
+const ORBIT = 0.090;
+
+/* Every cage parameter can be overridden from the URL while art-directing, e.g.
+   ?yaw=1.5708&length=0.42&radius=0.18  — handy on a phone next to the painting. */
+{
+  const qs = new URLSearchParams(location.search);
+  for (const k of Object.keys(CAGE)) {
+    if (qs.has(k) && !Number.isNaN(parseFloat(qs.get(k)))) CAGE[k] = parseFloat(qs.get(k));
+  }
+}
 
 /* The mockup shows the structure centred on the painting, so the scene root
    sits at the anchor origin. An earlier build nudged it by (-0.10, 0, -0.05),
@@ -129,6 +151,19 @@ function toAnchorSpace(object3d) {
   g.rotation.x = Math.PI / 2;
   g.add(object3d);
   return g;
+}
+
+/* Does the cage's ground footprint stay inside the painting (1.0 x ART_H)?
+   The footprint is a length x 2radius rectangle, rotated by CAGE.yaw about Y. */
+function footprintFits() {
+  const hx = CAGE.length / 2, hz = CAGE.radius;
+  const c = Math.cos(CAGE.yaw), s = Math.sin(CAGE.yaw);
+  let ex = 0, ez = 0;
+  for (const [x, z] of [[-hx, -hz], [hx, -hz], [hx, hz], [-hx, hz]]) {
+    ex = Math.max(ex, Math.abs(x * c + z * s));
+    ez = Math.max(ez, Math.abs(-x * s + z * c));
+  }
+  return ex <= 0.5 && ez <= ART_H / 2;
 }
 
 function buildScene(scene) {
@@ -153,64 +188,104 @@ function buildScene(scene) {
     color: BLUE, roughness: 0.82, metalness: 0, flatShading: true,
   });
 
-  /* rings at base / eave / apex */
-  const base = [], eave = [], apex = [];
-  for (let i = 0; i < SIDES; i++) {
-    const a = (i / SIDES) * Math.PI * 2;
-    const c = Math.cos(a), s = Math.sin(a);
-    base.push(new THREE.Vector3(c * R, 0, s * R));
-    eave.push(new THREE.Vector3(c * R, WALL_H, s * R));
-    apex.push(new THREE.Vector3(c * APEX_R, WALL_H + ROOF_H, s * APEX_R));
-  }
+  /* ---------- the cage, from the artist's sketch ------------------------------
+     The sketch measures out as: ~7 distinct horizontal member levels, a vertical
+     member at each end, an overall length/height ratio of ~1.14, and a pink cloth
+     draped over the near end. A 12-sided section is what produces exactly 7
+     distinct rail heights under projection (cos 15/45/75 deg give 7 levels), so
+     the cage is a 12-gon barrel: 12 longitudinal rails, hoops at both ends and
+     mid-length, resting its belly on the canvas. */
+  const sides = CAGE.sides;
+  const halfL = CAGE.length / 2;
 
-  /* merge every tube into ONE geometry (one draw call) */
+  /* section radius along the axis: a slight barrel belly, tapering to the far end */
+  const radiusAt = (t) => CAGE.radius * (1 - (1 - CAGE.taper) * t)
+                           * (1 + CAGE.belly * Math.sin(Math.PI * t));
+
+  /* Each station is lifted so the lowest facet rests exactly on the canvas: the
+     barrel's whole underside touches the artwork instead of floating at the tip. */
+  const sectionAt = (t) => {
+    const r = radiusAt(t);
+    const x = -halfL + t * CAGE.length;
+    const yc = r * Math.cos(Math.PI / sides) + 0.002;
+    const pts = [];
+    for (let k = 0; k < sides; k++) {
+      const a = (k + 0.5) * 2 * Math.PI / sides;
+      pts.push(new THREE.Vector3(x, yc + r * Math.cos(a), r * Math.sin(a)));
+    }
+    return pts;
+  };
+  const STATIONS = [0, 0.25, 0.5, 0.75, 1];
+  const HOOPS = [0, 0.5, 1];
+  const sections = STATIONS.map(sectionAt);
+
+  /* merge every member + joint into ONE geometry (one draw call) */
   const geos = [];
   const up = new THREE.Vector3(0, 1, 0);
   function strut(a, b) {
     const len = a.distanceTo(b);
     if (len < 1e-6) return;
-    const g = new THREE.CylinderGeometry(STROKE, STROKE, len, 6, 1, false).toNonIndexed();
+    const g = new THREE.CylinderGeometry(CAGE.stroke, CAGE.stroke, len, 6, 1, false).toNonIndexed();
     const q = new THREE.Quaternion().setFromUnitVectors(up, b.clone().sub(a).normalize());
     g.applyMatrix4(new THREE.Matrix4().compose(
       a.clone().add(b).multiplyScalar(0.5), q, new THREE.Vector3(1, 1, 1)));
     geos.push(g);
   }
   function joint(p) {
-    const g = new THREE.IcosahedronGeometry(STROKE * 1.7, 0);
+    const g = new THREE.IcosahedronGeometry(CAGE.stroke * 1.6, 0);
     g.translate(p.x, p.y, p.z);
     geos.push(g);
   }
 
-  for (let i = 0; i < SIDES; i++) {
-    const j = (i + 1) % SIDES;
-    strut(base[i], eave[i]);                 /* post */
-    strut(eave[i], eave[j]);                 /* eave band */
-    strut(eave[i], apex[i]);                 /* rafter */
-    strut(apex[i], apex[j]);                 /* apex ring */
-    strut(base[i], base[j]);                 /* base ring on the canvas */
-    if (i % 2 === 0) strut(base[i], eave[j]); /* alternating brace, as in the mockup */
-    joint(base[i]); joint(eave[i]); joint(apex[i]);
+  for (let i = 0; i < STATIONS.length - 1; i++) {          /* longitudinal rails */
+    for (let k = 0; k < sides; k++) strut(sections[i][k], sections[i + 1][k]);
   }
+  for (const s of HOOPS) {                                  /* hoops */
+    const pts = sectionAt(s);
+    for (let k = 0; k < sides; k++) strut(pts[k], pts[(k + 1) % sides]);
+  }
+  for (const pts of sections) for (const p of pts) joint(p);
 
-  const dome = new THREE.Group();
-  dome.add(new THREE.Mesh(mergeGeometries(geos, false), blueMat));
+  const cage = new THREE.Group();
+  cage.add(new THREE.Mesh(mergeGeometries(geos, false), blueMat));
 
-  /* faint roof shell so the volume reads without hiding the painting */
-  const roofShell = new THREE.Mesh(
-    new THREE.ConeGeometry(R * 1.0, ROOF_H, SIDES, 1, true),
-    new THREE.MeshStandardMaterial({ color: BLUE, transparent: true, opacity: 0.06,
-      flatShading: true, side: THREE.DoubleSide, depthWrite: false })
-  );
-  roofShell.position.y = WALL_H + ROOF_H / 2;
-  dome.add(roofShell);
-  root.add(dome);
+  /* The pink cloth thrown over the near end: a flared skirt off the near rim with
+     an irregular, sagging hem so it reads as fabric rather than a lid. */
+  const near = sectionAt(0);
+  const nearR = radiusAt(0);
+  const nearYc = nearR * Math.cos(Math.PI / sides) + 0.002;
+  const hem = [];
+  for (let k = 0; k < sides; k++) {
+    const a = (k + 0.5) * 2 * Math.PI / sides;
+    /* deterministic irregularity — a hand-thrown cloth, not a lathe */
+    const wobble = 1 + 0.10 * Math.sin(k * 2.7) + 0.06 * Math.cos(k * 4.1);
+    const rr = nearR * CAGE.drapeFlare * wobble;
+    /* the hem hangs lower where the cloth is not pinned (cos a < 0), and spills
+       further out in places, so the outline stays soft instead of lathe-like */
+    const hemDrop = CAGE.drapeSag * (0.35 + 0.65 * Math.max(0, -Math.cos(a))) * wobble;
+    hem.push(new THREE.Vector3(
+      -halfL - CAGE.drapeDepth * (0.55 + 0.45 * wobble),
+      nearYc - hemDrop + rr * Math.cos(a),
+      rr * Math.sin(a)));
+  }
+  const drape = [];
+  for (let k = 0; k < sides; k++) {
+    const j = (k + 1) % sides;
+    drape.push(near[k], hem[k], hem[j]);
+    drape.push(near[k], hem[j], near[j]);
+  }
+  const drapeGeo = new THREE.BufferGeometry().setFromPoints(drape);
+  drapeGeo.computeVertexNormals();
+  /* unlit and translucent: lit, the cloth washed out to a pale slab, and the
+     sketch's pink is a flat marker colour anyway. depthWrite off so the cage
+     reads through it, the way it does in the drawing. */
+  cage.add(new THREE.Mesh(drapeGeo, new THREE.MeshBasicMaterial({
+    color: DRAPE, side: THREE.DoubleSide, transparent: true, opacity: 0.62,
+    depthWrite: false,
+  })));
 
-  const floor = new THREE.Mesh(
-    new THREE.CircleGeometry(R * 0.96, SIDES * 2),
-    new THREE.MeshBasicMaterial({ color: BLUE_DARK, transparent: true, opacity: 0.16, depthWrite: false })
-  );
-  floor.rotation.x = -Math.PI / 2; floor.position.y = 0.001;
-  root.add(floor);
+  cage.rotation.y = CAGE.yaw;      /* 0 = axis across the painting, PI/2 = into it */
+  root.add(cage);
 
   /* ---------- cat (blue linework = structure/predator) ---------- */
   function makeCat() {
@@ -264,11 +339,11 @@ function buildScene(scene) {
 
   const cat = makeCat();
   const mouse = makeMouse();
-  const catY = 0.050, mouseY = 0.020;
+  const catY = 0.050, mouseY = 0.022;
   cat.position.y = catY; mouse.position.y = mouseY;
   root.add(cat, mouse);
 
-  return { root, dome, cat, mouse, catY, mouseY };
+  return { root, cage, cat, mouse, catY, mouseY };
 }
 
 /* ---------- chase dramaturgy: CHASE → FREEZE (cat overshoots) → STANDOFF → reverse ---------- */
@@ -318,7 +393,7 @@ function animateActors(A, dt, t) {
   A.cat.userData.tail.rotation.x = Math.sin(t * 6 * flick) * 0.4 * flick;
   if (!REDUCED) {
     const s = 1 + Math.sin(t * 0.8) * 0.008;
-    A.dome.scale.set(s, 1 + Math.sin(t * 0.8 + 1) * 0.005, s);
+    A.cage.scale.set(s, 1 + Math.sin(t * 0.8 + 1) * 0.005, s);
   }
 }
 
@@ -415,12 +490,13 @@ async function startAR() {
                 Math.round((-v.y * 0.5 + 0.5) * container.clientHeight)];
       }),
       upDot: Math.round(up.dot(normal) * 1000) / 1000,
-      /* the base ring must stay inside the painting (1.0 x ART_H) */
-      footprintFits: (2 * R <= 1.0) && (2 * R <= ART_H),
+      /* the cage's footprint (a length x section rectangle, rotated by yaw) must
+         stay inside the painting, which spans 1.0 x ART_H in anchor space */
+      footprintFits: footprintFits(),
       viewport: [container.clientWidth, container.clientHeight],
       video: [mindarThree.video ? mindarThree.video.videoWidth : 0,
               mindarThree.video ? mindarThree.video.videoHeight : 0],
-      params: { R, WALL_H, ROOF_H, APEX_R, ART_H },
+      params: { CAGE, ART_H },
     };
   };
 
@@ -442,7 +518,7 @@ async function startAR() {
         `found:  ${debugEl.dataset.found === '1' ? 'yes' : 'no'}\n` +
         `anchor x=${m[12].toFixed(3)} y=${m[13].toFixed(3)} z=${m[14].toFixed(3)}\n` +
         `root   x=${ROOT_OFFSET.x} z=${ROOT_OFFSET.z}\n` +
-        `ring R=${R}  wall=${WALL_H}  roof=${ROOF_H}`;
+        `cage L=${CAGE.length} r=${CAGE.radius} sides=${CAGE.sides} yaw=${CAGE.yaw.toFixed(2)}`;
     }
   });
 }
@@ -500,7 +576,8 @@ function startPreview() {
 window.__probe = () => ({
   mode: window.__mode,
   anchorFound: document.getElementById('hint').classList.contains('hidden'),
-  R, WALL_H, ROOF_H, APEX_R,
+  cage: CAGE,
+  footprintFits: footprintFits(),
 });
 
 startAR().then(() => { window.__mode = 'ar'; }).catch(err => {

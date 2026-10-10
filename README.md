@@ -1,15 +1,16 @@
 # AR Dome — artwork augment
 
-Point your phone camera at the painting and a low-poly gazebo in the same blue
-as the artwork's linework anchors to it in AR — with a low-poly cat chasing a
-mouse inside.
+Point your phone camera at the painting and a low-poly hooped cage in the same
+blue as the artwork's linework anchors to it in AR — a pink cloth thrown over one
+end, and a low-poly cat chasing a mouse along the floor inside.
 
 **Live:** https://edwin607.github.io/ar-dome/
 
 ## How it works
 - [MindAR](https://github.com/hiukim/mind-ar) image tracking (three.js build, pinned to three@0.150.1) anchors the scene to the artwork.
 - `artwork.mind.gz.*` — the compiled image target, gzipped and chunked; the page reassembles and decompresses it in-browser (`DecompressionStream`, pako fallback).
-- Gazebo struts are tubes matching the painting's stroke weight, in the sampled linework blue (`#2a3670`).
+- The cage's members are tubes matching the painting's stroke weight, in the sampled linework blue (`#2a3670`); the cloth is the pink from the artist's sketch (`#c0505f`).
+- Every cage parameter can be overridden from the URL while art-directing, e.g. `?yaw=1.5708&length=0.42&radius=0.18` — useful on a phone next to the painting.
 - Camera + HTTPS required — open on a phone for AR. Camera denied (or desktop) → orbit-controls preview against the artwork.
 - `?debug=1` draws the tracked target frame and the anchor axes, so a misalignment can be diagnosed on-device.
 
@@ -30,23 +31,31 @@ in XZ and the height on +y — as an earlier revision did — makes the whole
 structure *lie flat on the painting* while tracking still looks perfect. That was
 the "not aligning" bug. See SKILL.md for the full write-up.
 
-## Scene proportions (from the rendered mockup)
+## The cage (from the artist's sketch)
+
+Measuring the sketch in the reference photo gives ~7 distinct horizontal member
+levels, a vertical member at each end, an overall length/height of ~1.14, and a
+pink cloth over the near end. A **12-sided section is what yields exactly 7
+distinct rail heights** under projection (cos 15/45/75°), so the cage is a
+12-gon barrel: 12 longitudinal rails, hoops at both ends and mid-length, resting
+its whole underside on the canvas.
 
 | parameter | value | note |
 |---|---|---|
-| `R` (base/eave ring radius) | `0.34` | Ø 0.68 of the painting width; fits inside 1.0 × 0.7222 |
-| `WALL_H` | `0.24` | post height |
-| `ROOF_H` | `0.19` | roof rise above the eave |
-| `APEX_R` | `0.15` | small ring at the top |
-| `STROKE` | `0.0045` | tube radius — matches the painting's line weight |
-| `ROOT_OFFSET` | `(0, 0, 0)` | centred on the artwork, as in the mockup |
+| `length` | `0.50` | along the axis, in painting widths |
+| `radius` | `0.215` | section circumradius at the near end |
+| `taper` | `0.82` | far-end radius / near-end radius |
+| `sides` | `12` | gives the sketch's 7 rail levels |
+| `stroke` | `0.0042` | member radius — matches the painting's line weight |
+| `yaw` | `0` | `0` = axis across the painting, `PI/2` = axis into it |
+| `drapeFlare` / `drapeSag` | `1.20` / `0.055` | cloth over the near end |
 
-The reference render is an AI-generated image: it is a good guide to look and
-proportion, but its eight post feet do not agree on a single ground ring
-(their implied ring centres differ by more than the ring radius), so it cannot be
-used as an exact dimensional target. The values above match its silhouette and
-footprint without copying that inconsistency. Tune `R`/`WALL_H`/`ROOF_H` at the
-top of `index.html`.
+![Cage from the sketch](docs/cage-from-sketch.png)
+
+The earlier build was an octagonal hip-roofed gazebo matched to an AI-generated
+render. That render is a good guide to look but not to measurement: its eight
+post feet do not agree on a single ground ring (their implied ring centres differ
+by more than the ring radius). The sketch supersedes it.
 
 ## Repository layout
 - `index.html` — the whole AR experience (single file, CDN dependencies)
