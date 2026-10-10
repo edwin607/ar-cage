@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>MindAR target compiler</title></head><body>
+<img id="src" style="display:none">
+<script type="module">
+const q = new URLSearchParams(location.search);
+const src = q.get('src') || './artwork-target.jpg';
+const mindar = q.get('mindar') || 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js';
+document.getElementById('src').src = src;
+window.done = false; window.err = null; window.b64 = null;
+try {
+  const mod = await import(mindar);
+  const img = document.getElementById('src');
+  await img.decode();
+  const compiler = new MINDAR.IMAGE.Compiler();
+  await compiler.compileImageTargets([img], (p) => { window.progress = p; });
+  const buffer = compiler.exportData();
+  let bin = '';
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  window.b64 = btoa(bin);
+} catch (e) { window.err = String(e && e.stack || e); }
+window.done = true;
+</script>
+</body></html>
