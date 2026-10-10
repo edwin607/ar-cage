@@ -88,10 +88,16 @@ function mulberry32(seed) {
   };
 }
 
-/* ---------- scene shared by AR and fallback preview ---------- */
-const R = 0.34;           /* dome radius relative to target width */
+/* ---------- scene shared by AR and fallback preview ----------
+   Gazebo form from the artist's sketch: vertical pillars on a base ring,
+   two horizontal eave bands, and a faceted hip roof rising to a small apex ring. */
+const R = 0.30;           /* base radius relative to target width */
 const STROKE = 0.011;     /* stroke thickness — matches the artwork's heavy blue lines */
-const ORBIT = R * 0.62;
+const WALL_H = 0.20;      /* pillar height */
+const ROOF_H = 0.13;      /* roof rise above the eave */
+const APEX_R = 0.10;      /* small top ring radius */
+const SIDES = 8;
+const ORBIT = R * 0.55;
 
 function buildScene(scene) {
   const root = new THREE.Group();
@@ -109,78 +115,69 @@ function buildScene(scene) {
   const domeMat = new THREE.MeshStandardMaterial({ color: BLUE, roughness: 0.85, metalness: 0, flatShading: true });
   const mustardMat = new THREE.MeshStandardMaterial({ color: MUSTARD, roughness: 0.85, metalness: 0, flatShading: true });
 
-  /* irregular low-poly hemisphere: displaced vertices, varied stroke weight */
   const rand = mulberry32(20261010);
-  const geo = new THREE.SphereGeometry(R, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2);
-  geo.deleteAttribute('normal'); geo.deleteAttribute('uv');
-  const pos = geo.getAttribute('position');
-  {
-    const v = new THREE.Vector3();
-    for (let i = 0; i < pos.count; i++) {
-      v.fromBufferAttribute(pos, i);
-      const n = v.clone().normalize();
-      v.addScaledVector(n, (rand() - 0.5) * 0.04 * R);
-      pos.setXYZ(i, v.x, v.y, v.z);
-    }
+
+  /* gazebo skeleton: vertices at base / eave / apex rings */
+  const jitter = (amp) => (rand() - 0.5) * amp;
+  const base = [], eave = [], apex = [];
+  for (let i = 0; i < SIDES; i++) {
+    const a = (i / SIDES) * Math.PI * 2;
+    const rb = R * (1 + jitter(0.05));
+    base.push(new THREE.Vector3(Math.cos(a) * rb, 0, Math.sin(a) * rb));
+    const re = R * (1 + jitter(0.04));
+    eave.push(new THREE.Vector3(Math.cos(a) * re, WALL_H * (1 + jitter(0.06)), Math.sin(a) * re));
+    const ra = APEX_R * (1 + jitter(0.08));
+    apex.push(new THREE.Vector3(Math.cos(a) * ra, WALL_H + ROOF_H * (1 + jitter(0.08)), Math.sin(a) * ra));
   }
 
-  /* merge every tube + node into ONE geometry (one draw call) */
+  /* merge every strut + node into ONE geometry (one draw call) */
   const geos = [];
-  const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
-  const seen = new Set();
-  function addEdge(i, j) {
-    const k = i < j ? i + '_' + j : j + '_' + i;
-    if (seen.has(k)) return; seen.add(k);
-    tmpA.fromBufferAttribute(pos, i); tmpB.fromBufferAttribute(pos, j);
-    if (tmpA.distanceTo(tmpB) < 1e-5) return;
-    const r = STROKE * (0.75 + rand() * 0.5);   /* hand-drawn weight variance */
-    const g = new THREE.CylinderGeometry(r, r, tmpA.distanceTo(tmpB), 6, 1, false).toNonIndexed();
+  const up = new THREE.Vector3(0, 1, 0);
+  function strut(a, b, weight = 1) {
+    const r = STROKE * weight * (0.8 + rand() * 0.4);   /* hand-drawn weight variance */
+    const g = new THREE.CylinderGeometry(r, r, a.distanceTo(b), 6, 1, false).toNonIndexed();
     const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion().setFromUnitVectors(up, tmpB.clone().sub(tmpA).normalize());
-    m.compose(tmpA.clone().add(tmpB).multiplyScalar(0.5), q, new THREE.Vector3(1, 1, 1));
+    const q = new THREE.Quaternion().setFromUnitVectors(up, b.clone().sub(a).normalize());
+    m.compose(a.clone().add(b).multiplyScalar(0.5), q, new THREE.Vector3(1, 1, 1));
     g.applyMatrix4(m);
     geos.push(g);
   }
-  const index = geo.getIndex();
-  for (let f = 0; f < index.count; f += 3) {
-    addEdge(index.getX(f), index.getX(f + 1));
-    addEdge(index.getX(f + 1), index.getX(f + 2));
-    addEdge(index.getX(f + 2), index.getX(f));
-  }
-  const seenV = new Set();
-  const mustardNodes = new Set();
-  while (mustardNodes.size < 3) mustardNodes.add(Math.floor(rand() * pos.count));
-  let vi = 0;
-  for (let i = 0; i < pos.count; i++, vi++) {
-    tmpA.fromBufferAttribute(pos, i);
-    const k = tmpA.toArray().map(n => n.toFixed(3)).join(',');
-    if (seenV.has(k)) continue; seenV.add(k);
+  const mustardNodes = [];
+  function node(p, accent) {
     const g = new THREE.IcosahedronGeometry(STROKE * 1.7, 0).toNonIndexed();
-    g.translate(tmpA.x, tmpA.y, tmpA.z);
-    if (mustardNodes.has(vi)) {
-      /* accent junctions stay separate so they can take the mustard material */
-      const node = new THREE.Mesh(g, mustardMat);
-      root.add(node);
-    } else {
-      geos.push(g);
-    }
+    g.translate(p.x, p.y, p.z);
+    if (accent) { const mesh = new THREE.Mesh(g, mustardMat); mustardNodes.push(mesh); root.add(mesh); }
+    else geos.push(g);
   }
+
+  const accentIdx = new Set();
+  while (accentIdx.size < 3) accentIdx.add(Math.floor(rand() * SIDES));
+
+  for (let i = 0; i < SIDES; i++) {
+    const j = (i + 1) % SIDES;
+    strut(base[i], eave[i]);                 /* pillar */
+    strut(eave[i], eave[j]);                 /* eave band */
+    strut(eave[i], apex[i]);                 /* rafter */
+    strut(apex[i], apex[j], 0.9);            /* apex ring */
+    strut(base[i], base[j]);                 /* base ring */
+    if (i % 2 === 0) strut(base[i], eave[j], 0.7);  /* light diagonal braces, alternating */
+    node(eave[i], accentIdx.has(i));         /* junction caps at the eave */
+  }
+
   const dome = new THREE.Group();
   dome.add(new THREE.Mesh(mergeGeometries(geos, false), domeMat));
 
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(R, STROKE, 6, 18), domeMat);
-  ring.rotation.x = Math.PI / 2;
-  dome.add(ring);
-
-  const shell = new THREE.Mesh(
-    new THREE.SphereGeometry(R * 0.995, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2),
+  /* faint roof shell so the volume reads */
+  const roofShell = new THREE.Mesh(
+    new THREE.ConeGeometry(R * 1.0, ROOF_H, SIDES, 1, true),
     new THREE.MeshStandardMaterial({ color: BLUE, transparent: true, opacity: 0.07, flatShading: true, side: THREE.DoubleSide, depthWrite: false })
   );
-  dome.add(shell);
+  roofShell.position.y = WALL_H + ROOF_H / 2;
+  dome.add(roofShell);
   root.add(dome);
 
   const floor = new THREE.Mesh(
-    new THREE.CircleGeometry(R * 0.96, 18),
+    new THREE.CircleGeometry(R * 0.96, SIDES * 2),
     new THREE.MeshBasicMaterial({ color: BLUE_DARK, transparent: true, opacity: 0.18, depthWrite: false })
   );
   floor.rotation.x = -Math.PI / 2; floor.position.y = 0.001;
@@ -321,7 +318,7 @@ async function startAR() {
   const A = buildScene(scene);
   anchor.group.add(A.root);
   /* dome grows from the painting's green junction node, not dead-center */
-  A.root.position.set(0.02, 0, -0.06);
+  A.root.position.set(-0.10, 0, -0.05);
 
   anchor.onTargetFound = () => hint.classList.add('hidden');
   anchor.onTargetLost = () => hint.classList.remove('hidden');
@@ -374,7 +371,7 @@ function startPreview() {
   controls.enableDamping = true;
 
   const A = buildScene(scene);
-  A.root.position.set(0.02, 0, -0.06);
+  A.root.position.set(-0.10, 0, -0.05);
 
   window.addEventListener('resize', () => {
     camera.aspect = container.clientWidth / container.clientHeight;
