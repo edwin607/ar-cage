@@ -339,17 +339,25 @@ function startPreview() {
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  /* the artwork as the ground plane the dome sits on */
-  new THREE.TextureLoader().load('./artwork-target.jpg', tex => {
-    tex.encoding = THREE.sRGBEncoding;
-    const aspect = tex.image.width / tex.image.height;
-    const art = new THREE.Mesh(
-      new THREE.PlaneGeometry(1, 1 / aspect),
-      new THREE.MeshBasicMaterial({ map: tex })
-    );
-    art.rotation.x = -Math.PI / 2;
-    scene.add(art);
-  });
+  /* the artwork as the ground plane the dome sits on (chunked jpg, reassembled) */
+  (async () => {
+    const bufs = await Promise.all(['aa','ab','ac'].map(async p =>
+      new Uint8Array(await (await fetch('./artwork-target.jpg.' + p)).arrayBuffer())));
+    const total = bufs.reduce((n, p) => n + p.length, 0);
+    const buf = new Uint8Array(total);
+    let off = 0; for (const p of bufs) { buf.set(p, off); off += p.length; }
+    const url = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
+    new THREE.TextureLoader().load(url, tex => {
+      tex.encoding = THREE.sRGBEncoding;
+      const aspect = tex.image.width / tex.image.height;
+      const art = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1 / aspect),
+        new THREE.MeshBasicMaterial({ map: tex })
+      );
+      art.rotation.x = -Math.PI / 2;
+      scene.add(art);
+    });
+  })();
   const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.01, 10);
   camera.position.set(0.62, 0.78, 1.05);
   const controls = new OrbitControls(camera, renderer.domElement);
