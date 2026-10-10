@@ -104,10 +104,11 @@ async function loadTarget() {
    becomes +z (out of the painting) and canonical +Z (down the image) becomes -y
    (up the image). The previous build placed the footprint in XZ and its height
    on +y, so the structure lay flat on the painting instead of standing on it.
-   The artwork photo is 900x650, so the painting spans 1.0 x 0.7222 and the
-   augment's footprint must stay inside that to read as "standing on" it. */
-const TARGET_AR = 900 / 650;
-const ART_H = 1 / TARGET_AR;      /* 0.7222 — painting height in anchor units */
+   The artwork photo is 900x643 — the canvas is 7x5in, so the target is rectified
+   to its true aspect (1.4). The painting spans 1.0 x 0.7144 and the augment's
+   footprint must stay inside that to read as "standing on" it. */
+const TARGET_AR = 900 / 643;      /* the canvas is 7x5in — the target is rectified to 1.4 */
+const ART_H = 1 / TARGET_AR;      /* 0.7144 — painting height in anchor units */
 
 /* ---------- the cage: proportions read off the artist's sketch -------------
    Measured from the sketch (reference photo, lower half): ~7 distinct
@@ -538,9 +539,14 @@ function startPreview() {
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  /* the artwork as the ground plane the dome sits on (chunked jpg, reassembled) */
+  /* the artwork as the ground plane the cask sits on (chunked jpg, reassembled).
+     The part list comes from the manifest, so retargeting needs no code edit. */
   (async () => {
-    const bufs = await Promise.all(['aa', 'ab', 'ac'].map(async p =>
+    let parts = ['aa', 'ab', 'ac'];
+    try {
+      parts = (await (await fetch('./artwork-target.manifest.json')).json()).parts;
+    } catch (e) { /* keep the fallback list */ }
+    const bufs = await Promise.all(parts.map(async p =>
       new Uint8Array(await (await fetch('./artwork-target.jpg.' + p)).arrayBuffer())));
     const total = bufs.reduce((n, p) => n + p.length, 0);
     const buf = new Uint8Array(total);

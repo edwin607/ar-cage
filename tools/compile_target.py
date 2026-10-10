@@ -24,9 +24,15 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=[
-            '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
-            '--ignore-gpu-blocklist', '--enable-webgl'])
+        launch_args = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+                       '--ignore-gpu-blocklist', '--enable-webgl']
+        try:
+            browser = p.chromium.launch(headless=True, args=launch_args)
+        except Exception as e:
+            # the bundled Chromium is not installed (and may not be installable
+            # inside a sandbox) — the system Chrome works just as well
+            print(f'(bundled chromium unavailable: {str(e)[:80]} — using channel="chrome")')
+            browser = p.chromium.launch(channel='chrome', headless=True, args=launch_args)
         page = browser.new_page()
         page.on('pageerror', lambda e: print('pageerror:', str(e)[:300]))
         page.goto(f'http://127.0.0.1:{args.port}/compile.html?src=./{args.image}')
